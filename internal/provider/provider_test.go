@@ -2,11 +2,13 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kamllistos/albert/internal/runner"
 )
@@ -78,6 +80,9 @@ func TestLookupAll(t *testing.T) {
 		}
 		mu.Unlock()
 		defer atomic.AddInt32(&cur, -1)
+		// Hold the slot so that, were the bound missing, all 40 lookups
+		// would overlap and the peak would blow past the limit.
+		time.Sleep(30 * time.Millisecond)
 		if n%2 == 1 {
 			return Update{}, false
 		}
@@ -86,8 +91,8 @@ func TestLookupAll(t *testing.T) {
 	if len(got) != 20 {
 		t.Fatalf("got %d updates, want 20", len(got))
 	}
-	if peak > 8 {
-		t.Fatalf("peak concurrency %d exceeds limit 8", peak)
+	if peak != 8 {
+		t.Fatalf("peak concurrency = %d, want exactly the limit 8", peak)
 	}
 	// Order follows input order.
 	for i, u := range got {
@@ -113,5 +118,26 @@ func TestLookupAllStopsOnCancel(t *testing.T) {
 func TestLookupAllEmpty(t *testing.T) {
 	if got := LookupAll(context.Background(), []int(nil), 0, func(context.Context, int) (Update, bool) { return Update{}, true }); len(got) != 0 {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestJSONTagsLowerCamel(t *testing.T) {
+	for _, v := range []any{Update{}, Result{}, Tool{}} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		for k := range m {
+			if k == "" || k[0] < 'a' || k[0] > 'z' {
+				t.Errorf("%T has non-lowerCamel json key %q", v, k)
+			}
+		}
+		if len(m) == 0 {
+			t.Errorf("%T serialized no fields", v)
+		}
 	}
 }

@@ -33,12 +33,19 @@ type Tool struct {
 
 // Update says a newer version of a tool is available.
 type Update struct {
-	Name, Latest, Description, Homepage string
+	Name        string `json:"name"`
+	Latest      string `json:"latest"`
+	Description string `json:"description"`
+	Homepage    string `json:"homepage"`
 }
 
 // Result is a search hit. ID is used by mas.
 type Result struct {
-	Name, Source, Version, Description, ID string
+	Name        string `json:"name"`
+	Source      string `json:"source"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+	ID          string `json:"id"`
 }
 
 var (
