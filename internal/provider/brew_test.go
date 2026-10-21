@@ -272,3 +272,42 @@ func names(ps []Provider) []string {
 	}
 	return n
 }
+
+// flakyPrefix fails the first `brew --prefix` and succeeds afterwards.
+type flakyPrefix struct {
+	*runner.Fake
+	prefixCalls int
+}
+
+func (f *flakyPrefix) Run(ctx context.Context, name string, args ...string) (runner.Result, error) {
+	if name == "brew" && strings.Join(args, " ") == "--prefix" {
+		f.prefixCalls++
+		if f.prefixCalls == 1 {
+			return runner.Result{ExitCode: 1, Stderr: []byte("Error: transient\n")}, nil
+		}
+		return runner.Result{Stdout: []byte("/opt/homebrew\n")}, nil
+	}
+	return f.Fake.Run(ctx, name, args...)
+}
+
+func TestBrewPrefixRetriedAfterFailure(t *testing.T) {
+	f := &flakyPrefix{Fake: brewFake(t)}
+	p := NewBrew(f)
+	if got := p.WatchPaths(); len(got) != 0 {
+		t.Fatalf("WatchPaths = %q while brew --prefix fails, want none", got)
+	}
+	got := p.WatchPaths()
+	if len(got) != 1 || got[0] != "/opt/homebrew/Cellar" {
+		t.Errorf("WatchPaths after recovery = %q", got)
+	}
+	tools, err := p.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools[0].Path != "/opt/homebrew/Cellar/argocd" {
+		t.Errorf("Path after recovery = %q", tools[0].Path)
+	}
+	if f.prefixCalls != 2 {
+		t.Errorf("brew --prefix ran %d times, want 2 (retry once, then cached)", f.prefixCalls)
+	}
+}

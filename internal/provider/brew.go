@@ -51,8 +51,8 @@ type brewProvider struct {
 	r    runner.Runner
 	cask bool
 
-	prefixOnce sync.Once
-	prefix     string
+	mu     sync.Mutex
+	prefix string // cached only once `brew --prefix` has succeeded
 }
 
 // NewBrew returns the Homebrew formula provider.
@@ -84,18 +84,23 @@ func (p *brewProvider) installDir() string {
 	return "Cellar"
 }
 
-// brewPrefix returns the Homebrew prefix, fetched once. It is empty if brew
-// cannot be run.
+// brewPrefix returns the Homebrew prefix. A successful lookup is cached for
+// good; a failed one is not, so a transient failure (timeout, brew briefly
+// unavailable) is retried on the next call. It is empty while brew cannot be
+// run.
 func (p *brewProvider) brewPrefix() string {
-	p.prefixOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), prefixTimeout)
-		defer cancel()
-		res, err := p.r.Run(ctx, "brew", "--prefix")
-		if err != nil || res.ExitCode != 0 {
-			return
-		}
-		p.prefix = strings.TrimSpace(string(res.Stdout))
-	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.prefix != "" {
+		return p.prefix
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), prefixTimeout)
+	defer cancel()
+	res, err := p.r.Run(ctx, "brew", "--prefix")
+	if err != nil || res.ExitCode != 0 {
+		return ""
+	}
+	p.prefix = strings.TrimSpace(string(res.Stdout))
 	return p.prefix
 }
 
