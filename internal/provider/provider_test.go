@@ -59,7 +59,7 @@ func TestSentinelErrors(t *testing.T) {
 	}
 }
 
-func TestDefaultsEmptyUntilProvidersExist(t *testing.T) {
+func TestDefaultsNonNil(t *testing.T) {
 	if got := Defaults(&runner.Fake{}, nil); got == nil {
 		t.Fatal("Defaults must return a non-nil slice")
 	}

@@ -82,7 +82,7 @@ func ValidName(s string) bool {
 // Defaults returns every provider in display order: brew, cask, uv, pipx, pip,
 // npm, pnpm, bun, mas, cargo, go, gem. Each provider task appends its own.
 func Defaults(r runner.Runner, reg *registry.Client) []Provider {
-	ps := []Provider{}
+	ps := []Provider{NewBrew(r), NewCask(r)}
 	return ps
 }
 
