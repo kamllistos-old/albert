@@ -1,0 +1,5 @@
+crewai v1.14.2 (/Users/camtoando/.local/share/uv/tools/crewai)
+- crewai (/Users/camtoando/.local/bin/crewai)
+manim v0.21.0 (/Users/camtoando/.local/share/uv/tools/manim)
+- manim (/Users/camtoando/.local/bin/manim)
+- manimce (/Users/camtoando/.local/bin/manimce)
