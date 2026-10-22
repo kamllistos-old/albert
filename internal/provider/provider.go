@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kamllistos/albert/internal/registry"
 	"github.com/kamllistos/albert/internal/runner"
@@ -143,6 +144,55 @@ loop:
 	for _, s := range slots {
 		if s.ok {
 			out = append(out, s.u)
+		}
+	}
+	return out
+}
+
+// SearchAll searches every available provider in parallel, each bounded by
+// timeout, and returns the hits in provider order. Providers that fail or do
+// not support search (ErrUnsupported) are skipped. It returns once every
+// provider has answered or the timeout has passed, even if a provider ignores
+// its context.
+func SearchAll(ctx context.Context, ps []Provider, q string, timeout time.Duration) []Result {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	type answer struct {
+		i  int
+		rs []Result
+	}
+	ch := make(chan answer, len(ps)) // buffered: a late answer never blocks
+	pending := 0
+	for i, p := range ps {
+		if !p.Available() {
+			continue
+		}
+		pending++
+		go func() {
+			rs, err := p.Search(ctx, q)
+			if err != nil {
+				rs = nil
+			}
+			ch <- answer{i, rs}
+		}()
+	}
+	byProvider := make([][]Result, len(ps))
+collect:
+	for ; pending > 0; pending-- {
+		select {
+		case a := <-ch:
+			byProvider[a.i] = a.rs
+		case <-ctx.Done():
+			break collect // the rest took too long
+		}
+	}
+	out := []Result{}
+	for i, rs := range byProvider {
+		for _, r := range rs {
+			if r.Source == "" {
+				r.Source = ps[i].Name()
+			}
+			out = append(out, r)
 		}
 	}
 	return out

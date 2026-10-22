@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -557,5 +558,32 @@ func TestConcurrentUseIsRaceFree(t *testing.T) {
 	wg.Wait()
 	if jq := findTool(t, inv.Snapshot(), "brew", "jq"); !jq.Outdated {
 		t.Fatalf("jq = %+v", jq)
+	}
+}
+
+func TestUpdatableSources(t *testing.T) {
+	s := Snapshot{Tools: []provider.Tool{
+		{Name: "jq", Source: "npm", Outdated: true},
+		{Name: "wget", Source: "brew", Outdated: true},
+		{Name: "openssl", Source: "brew", Outdated: true, Dependency: true},
+		{Name: "rails", Source: "gem", Outdated: true, ReadOnly: true},
+		{Name: "ruff", Source: "uv"}, // up to date
+		{Name: "black", Source: "pip", Outdated: true},
+		{Name: "six", Source: "pip", Outdated: true, ReadOnly: true},
+		{Name: "lodash", Source: "npm", Outdated: true},
+	}}
+	if got, want := UpdatableSources(s, false), []string{"brew", "npm"}; !slices.Equal(got, want) {
+		t.Errorf("UpdatableSources(includePip=false) = %v, want %v", got, want)
+	}
+	if got, want := UpdatableSources(s, true), []string{"brew", "npm", "pip"}; !slices.Equal(got, want) {
+		t.Errorf("UpdatableSources(includePip=true) = %v, want %v", got, want)
+	}
+	// A dependency alone still makes its source updatable.
+	deps := Snapshot{Tools: []provider.Tool{{Name: "openssl", Source: "brew", Outdated: true, Dependency: true}}}
+	if got, want := UpdatableSources(deps, false), []string{"brew"}; !slices.Equal(got, want) {
+		t.Errorf("UpdatableSources(deps) = %v, want %v", got, want)
+	}
+	if got := UpdatableSources(Snapshot{}, true); len(got) != 0 {
+		t.Errorf("UpdatableSources(empty) = %v, want none", got)
 	}
 }

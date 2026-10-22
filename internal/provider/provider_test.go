@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -139,5 +140,68 @@ func TestJSONTagsLowerCamel(t *testing.T) {
 		if len(m) == 0 {
 			t.Errorf("%T serialized no fields", v)
 		}
+	}
+}
+
+// searchFake is a Provider whose only interesting method is Search.
+type searchFake struct {
+	name        string
+	unavailable bool
+	results     []Result
+	err         error
+	hang        bool // Search blocks forever, ignoring ctx
+	called      atomic.Bool
+}
+
+func (f *searchFake) Name() string                                       { return f.name }
+func (f *searchFake) Available() bool                                    { return !f.unavailable }
+func (f *searchFake) List(context.Context) ([]Tool, error)               { return nil, nil }
+func (f *searchFake) Outdated(context.Context) ([]Update, error)         { return nil, nil }
+func (f *searchFake) Upgrade(context.Context, []string, io.Writer) error { return nil }
+func (f *searchFake) Install(context.Context, string, io.Writer) error   { return nil }
+func (f *searchFake) WatchPaths() []string                               { return nil }
+func (f *searchFake) Search(ctx context.Context, q string) ([]Result, error) {
+	f.called.Store(true)
+	if f.hang {
+		select {} // ignores ctx on purpose
+	}
+	return f.results, f.err
+}
+
+func TestSearchAll(t *testing.T) {
+	ps := []Provider{
+		&searchFake{name: "brew", results: []Result{{Name: "jq", Source: "brew"}, {Name: "jql", Source: "brew"}}},
+		&searchFake{name: "cargo", err: ErrUnsupported},
+		&searchFake{name: "mas", err: errors.New("mas: boom")},
+		&searchFake{name: "gem", unavailable: true, results: []Result{{Name: "nope"}}},
+		&searchFake{name: "npm", results: []Result{{Name: "jq-cli"}}}, // Source left empty
+	}
+	got := SearchAll(context.Background(), ps, "jq", time.Second)
+	want := []string{"brew/jq", "brew/jql", "npm/jq-cli"}
+	if len(got) != len(want) {
+		t.Fatalf("SearchAll = %+v, want %v", got, want)
+	}
+	for i, r := range got {
+		if r.Source+"/"+r.Name != want[i] {
+			t.Fatalf("SearchAll = %+v, want %v", got, want)
+		}
+	}
+	if ps[3].(*searchFake).called.Load() {
+		t.Error("unavailable provider was searched")
+	}
+}
+
+func TestSearchAllTimeoutBounded(t *testing.T) {
+	ps := []Provider{
+		&searchFake{name: "brew", hang: true},
+		&searchFake{name: "npm", results: []Result{{Name: "x", Source: "npm"}}},
+	}
+	start := time.Now()
+	got := SearchAll(context.Background(), ps, "x", 100*time.Millisecond)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("SearchAll took %v with a hung provider; want about the timeout", d)
+	}
+	if len(got) != 1 || got[0].Name != "x" {
+		t.Fatalf("SearchAll = %+v, want the npm result only", got)
 	}
 }

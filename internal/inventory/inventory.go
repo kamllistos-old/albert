@@ -471,3 +471,20 @@ func (i *Inventory) notifyLocked() {
 		}
 	}
 }
+
+// UpdatableSources returns, sorted, the sources with at least one outdated
+// tool that is not read-only. Dependencies count (upgrading a source upgrades
+// them too). pip is left out unless includePip is set.
+func UpdatableSources(s Snapshot, includePip bool) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, t := range s.Tools {
+		if !t.Outdated || t.ReadOnly || seen[t.Source] || (t.Source == "pip" && !includePip) {
+			continue
+		}
+		seen[t.Source] = true
+		out = append(out, t.Source)
+	}
+	sort.Strings(out)
+	return out
+}
