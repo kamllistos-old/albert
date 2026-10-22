@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,18 +20,25 @@ const (
 	tokenCookie = "albert_token"
 	// refusedEvery is the most often a refused request is logged.
 	refusedEvery = 10 * time.Second
+	// maxLoginCodes is how many unused login codes are kept.
+	maxLoginCodes = 8
 )
+
+// loginCodeTTL is how long a login code works.
+var loginCodeTTL = 60 * time.Second
 
 // The checks below stop a web page the user happens to visit, or a
 // DNS-rebinding attacker, from driving the agent:
 //
 //   - Host must be one of ours, so a rebound name (evil.com -> 127.0.0.1)
-//     is refused before anything else, including the native UI that hands
-//     out the token cookie.
+//     is refused before anything else, including /login and the native UI.
 //   - Origin, when present, must be the UI's; browsers also send
 //     Sec-Fetch-Site, and a cross-site or same-site (other localhost port)
 //     request is refused even without Origin.
-//   - The token must match (Bearer header, or the native UI's cookie).
+//   - The token must match (Bearer header, or the cookie). Browsers get the
+//     cookie only by trading a one-time code from POST /api/login-code
+//     (which itself needs the token) at GET /login; nothing hands out the
+//     token to an unauthenticated caller.
 //   - State-changing requests need X-Albert-Request: 1. Pages on other
 //     origins cannot set it without a CORS preflight, and the agent never
 //     answers one: it sends no CORS headers at all.
@@ -116,9 +126,8 @@ func (s *server) validToken(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
 }
 
-// uiHandler serves the native UI (GET and HEAD only) and gives it the token
-// as an HttpOnly, SameSite=Strict cookie, so the page's own requests carry it
-// and its scripts never see it.
+// uiHandler serves the native UI, GET and HEAD only. It never sets the token
+// cookie: browsers get that only through /login.
 func (s *server) uiHandler(files http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -126,15 +135,121 @@ func (s *server) uiHandler(files http.Handler) http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "Albert's window can only be viewed.")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{
-			Name:     tokenCookie,
-			Value:    s.cfg.Token,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
-		})
 		files.ServeHTTP(w, r)
 	})
+}
+
+// loginCode mints a one-time code for /login. Callers must already hold the
+// token, so only "albert up" (or another token holder) can open a browser
+// session.
+func (s *server) loginCode(w http.ResponseWriter, r *http.Request) {
+	code, err := s.codes.mint()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Albert couldn't create a sign-in link.")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"code": code})
+}
+
+// expiredPage is shown for any login code that is missing, wrong, used or
+// expired.
+const expiredPage = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Albert</title></head>
+<body><p>This Albert link has expired. Run &quot;albert up&quot; again to open Albert.</p></body></html>
+`
+
+// login trades a one-time code for the token cookie (HttpOnly,
+// SameSite=Strict) and sends the browser to the UI. It sits behind the Host
+// check only: the browser has no token yet.
+func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("Referrer-Policy", "no-referrer")
+	// HEAD (link previews, prefetchers) must not use up the code.
+	if r.Method != http.MethodGet || !s.codes.redeem(r.URL.Query().Get("code")) {
+		s.refused.logf("refused login: missing, wrong, used or expired code")
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, expiredPage)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     tokenCookie,
+		Value:    s.cfg.Token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// loginCodes holds the outstanding one-time login codes, oldest first.
+type loginCodes struct {
+	mu    sync.Mutex
+	codes []issuedCode
+}
+
+type issuedCode struct {
+	code    string
+	expires time.Time
+}
+
+// mint returns a new random code, evicting the oldest beyond maxLoginCodes.
+func (l *loginCodes) mint() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	code := hex.EncodeToString(b[:])
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pruneLocked(time.Now())
+	l.codes = append(l.codes, issuedCode{code: code, expires: time.Now().Add(loginCodeTTL)})
+	if n := len(l.codes) - maxLoginCodes; n > 0 {
+		l.codes = append([]issuedCode(nil), l.codes[n:]...)
+	}
+	return code, nil
+}
+
+// redeem reports whether code is outstanding and unexpired, and if so uses it
+// up. Every outstanding code is compared in constant time.
+func (l *loginCodes) redeem(code string) bool {
+	if code == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pruneLocked(time.Now())
+	found := -1
+	for i, c := range l.codes {
+		if subtle.ConstantTimeCompare([]byte(code), []byte(c.code)) == 1 {
+			found = i
+		}
+	}
+	if found < 0 {
+		return false
+	}
+	l.codes = append(l.codes[:found], l.codes[found+1:]...)
+	return true
+}
+
+func (l *loginCodes) pruneLocked(now time.Time) {
+	kept := l.codes[:0]
+	for _, c := range l.codes {
+		if now.Before(c.expires) {
+			kept = append(kept, c)
+		}
+	}
+	l.codes = kept
+}
+
+// outstanding is how many unexpired codes are waiting to be used.
+func (l *loginCodes) outstanding() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pruneLocked(time.Now())
+	return len(l.codes)
 }
 
 // refusalLog logs refused requests at most once every refusedEvery, with a

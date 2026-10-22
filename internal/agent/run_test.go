@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -139,10 +140,35 @@ func TestRunNativeServesUI(t *testing.T) {
 			return false
 		}
 		defer resp.Body.Close()
-		return resp.StatusCode == http.StatusOK && slices.ContainsFunc(resp.Cookies(), func(c *http.Cookie) bool {
-			return c.Name == "albert_token" && c.Value == testToken
-		})
+		return resp.StatusCode == http.StatusOK && len(resp.Cookies()) == 0
 	})
+
+	// The "albert up" flow: mint a code with the token, then the browser
+	// trades it for the cookie.
+	req, _ := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/api/login-code", port), nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("X-Albert-Request", "1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct{ Code string }
+	err = json.NewDecoder(resp.Body).Decode(&body)
+	resp.Body.Close()
+	if err != nil || body.Code == "" {
+		t.Fatalf("login-code: status %d, err %v", resp.StatusCode, err)
+	}
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err = noRedirect.Get(fmt.Sprintf("http://localhost:%d/login?code=%s", port, body.Code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || !slices.ContainsFunc(resp.Cookies(), func(c *http.Cookie) bool {
+		return c.Name == "albert_token" && c.Value == testToken
+	}) {
+		t.Fatalf("login: status %d, cookies %v; want 303 with the token cookie", resp.StatusCode, resp.Cookies())
+	}
 }
 
 func TestRunRejectsBadOptions(t *testing.T) {

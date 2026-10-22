@@ -2,7 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"html"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -181,41 +183,189 @@ func TestBodyTooLarge413(t *testing.T) {
 	}
 }
 
-func TestNativeIndexSetsStrictCookie(t *testing.T) {
+func nativeConfig() Config {
 	cfg := testConfig()
 	cfg.UI = fstest.MapFS{
 		"index.html": {Data: []byte("<h1>Albert</h1>")},
 		"styles.css": {Data: []byte("body{}")},
 	}
-	e := newEnv(t, cfg)
-	// The browser has no token yet: "/" must not require one.
+	return cfg
+}
+
+func tokenCookieFrom(w *httptest.ResponseRecorder) *http.Cookie {
+	res := http.Response{Header: w.Header()}
+	for _, c := range res.Cookies() {
+		if c.Name == "albert_token" {
+			return c
+		}
+	}
+	return nil
+}
+
+// mintCode asks for a login code the way "albert up" does.
+func mintCode(t *testing.T, h http.Handler) string {
+	t.Helper()
+	w := serve(h, request("POST", "/api/login-code", ""))
+	wantStatus(t, w, http.StatusOK)
+	code := decode[map[string]string](t, w)["code"]
+	if len(code) != 32 || strings.Trim(code, "0123456789abcdef") != "" {
+		t.Fatalf("code = %q, want 32 lowercase hex chars", code)
+	}
+	return code
+}
+
+// login opens /login?code= the way a browser does: no token, typed URL.
+func login(h http.Handler, host, code string) *httptest.ResponseRecorder {
+	return serve(h, request("GET", "/login?code="+code, "", withoutHeader("Authorization"), withHost(host),
+		withHeader("Sec-Fetch-Site", "none")))
+}
+
+func wantLoginRefused(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	wantStatus(t, w, http.StatusForbidden)
+	if c := w.Header().Get("Set-Cookie"); c != "" {
+		t.Fatalf("refused login set a cookie: %s", c)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	const msg = `This Albert link has expired. Run "albert up" again to open Albert.`
+	if !strings.Contains(html.UnescapeString(w.Body.String()), msg) {
+		t.Fatalf("body = %q, want the expired-link message", w.Body.String())
+	}
+}
+
+func TestNativeIndexSetsNoCookie(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	// The browser has no token: "/" serves the UI without asking for one,
+	// but never hands it out.
 	w := serve(e.h, request("GET", "/", "", withoutHeader("Authorization"), withHost("localhost:7878")))
 	wantStatus(t, w, http.StatusOK)
 	if !strings.Contains(w.Body.String(), "<h1>Albert</h1>") {
 		t.Fatalf("body = %q, want index.html", w.Body.String())
 	}
-	res := http.Response{Header: w.Header()}
-	var c *http.Cookie
-	for _, ck := range res.Cookies() {
-		if ck.Name == "albert_token" {
-			c = ck
-		}
-	}
-	if c == nil {
-		t.Fatalf("no albert_token cookie; Set-Cookie = %q", w.Header().Values("Set-Cookie"))
-	}
-	if c.Value != testToken || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
-		t.Fatalf("cookie = %+v, want token value, HttpOnly, SameSite=Strict, Path=/", c)
+	if c := w.Header().Values("Set-Cookie"); len(c) != 0 {
+		t.Fatalf("GET / set cookies %q", c)
 	}
 	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want DENY", got)
 	}
+	w = serve(e.h, request("GET", "/styles.css", "", withoutHeader("Authorization"), withHost("localhost:7878")))
+	wantStatus(t, w, http.StatusOK)
+	if c := w.Header().Values("Set-Cookie"); len(c) != 0 {
+		t.Fatalf("asset set cookies %q", c)
+	}
+}
 
-	// Static assets are served too.
-	wantStatus(t, serve(e.h, request("GET", "/styles.css", "", withoutHeader("Authorization"), withHost("localhost:7878"))), http.StatusOK)
+func TestLoginSetsStrictCookieAndRedirects(t *testing.T) {
+	for name, cfg := range map[string]Config{"native": nativeConfig(), "docker": testConfig()} {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t, cfg)
+			w := login(e.h, "localhost:7879", mintCode(t, e.h))
+			wantStatus(t, w, http.StatusSeeOther)
+			if loc := w.Header().Get("Location"); loc != "/" {
+				t.Errorf("Location = %q, want /", loc)
+			}
+			c := tokenCookieFrom(w)
+			if c == nil {
+				t.Fatalf("no albert_token cookie; Set-Cookie = %q", w.Header().Values("Set-Cookie"))
+			}
+			if c.Value != testToken || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
+				t.Fatalf("cookie = %+v, want token value, HttpOnly, SameSite=Strict, Path=/", c)
+			}
+			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", cc)
+			}
+			// The cookie authenticates API calls.
+			wantStatus(t, serve(e.h, request("GET", "/api/tools", "", withCookie(c.Value))), http.StatusOK)
+		})
+	}
+}
 
-	// The cookie the UI received authenticates API calls.
-	wantStatus(t, serve(e.h, request("GET", "/api/tools", "", withCookie(c.Value), withHost("localhost:7878"))), http.StatusOK)
+func TestLoginCodeSingleUse(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+	wantLoginRefused(t, login(e.h, "localhost:7878", code))
+}
+
+func TestLoginCodeExpires(t *testing.T) {
+	old := loginCodeTTL
+	loginCodeTTL = 20 * time.Millisecond
+	t.Cleanup(func() { loginCodeTTL = old })
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	time.Sleep(40 * time.Millisecond)
+	wantLoginRefused(t, login(e.h, "localhost:7878", code))
+}
+
+func TestLoginRejectsBadCodes(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	bad := []string{"", "nope", code[:31], code + "0", strings.Repeat("0", 32)}
+	if up := strings.ToUpper(code); up != code {
+		bad = append(bad, up)
+	}
+	for _, b := range bad {
+		wantLoginRefused(t, login(e.h, "localhost:7878", b))
+	}
+	// No code parameter at all.
+	wantLoginRefused(t, serve(e.h, request("GET", "/login", "", withoutHeader("Authorization"))))
+	// The real code still works after all those misses.
+	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+}
+
+func TestLoginForeignHost403(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	for _, host := range []string{"evil.com:7879", "evil.com", ""} {
+		w := login(e.h, host, code)
+		wantStatus(t, w, http.StatusForbidden)
+		if c := w.Header().Get("Set-Cookie"); c != "" {
+			t.Fatalf("host %q got a cookie: %s", host, c)
+		}
+	}
+	// The code was not consumed by the refused attempts.
+	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+}
+
+func TestLoginNotConsumedByOtherMethods(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	for _, m := range []string{"HEAD", "POST"} {
+		w := serve(e.h, request(m, "/login?code="+code, "", withoutHeader("Authorization")))
+		if w.Code == http.StatusSeeOther || tokenCookieFrom(w) != nil {
+			t.Fatalf("%s /login logged in: status %d", m, w.Code)
+		}
+	}
+	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+}
+
+func TestLoginCodeEndpointGuarded(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	wantError(t, serve(e.h, request("POST", "/api/login-code", "", withoutHeader("Authorization"))), http.StatusUnauthorized)
+	wantError(t, serve(e.h, request("POST", "/api/login-code", "", withHeader("Authorization", "Bearer wrong"))), http.StatusUnauthorized)
+	wantError(t, serve(e.h, request("POST", "/api/login-code", "", withoutHeader("X-Albert-Request"))), http.StatusForbidden)
+	wantError(t, serve(e.h, request("POST", "/api/login-code", "", withHeader("Origin", "http://evil.com"))), http.StatusForbidden)
+	wantError(t, serve(e.h, request("POST", "/api/login-code", "", withHost("evil.com:7879"))), http.StatusForbidden)
+	if n := e.h.(*server).codes.outstanding(); n != 0 {
+		t.Fatalf("%d codes minted by refused requests", n)
+	}
+}
+
+func TestLoginCodesCappedOldestEvicted(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	var codes []string
+	for range maxLoginCodes + 1 {
+		codes = append(codes, mintCode(t, e.h))
+	}
+	if n := e.h.(*server).codes.outstanding(); n != maxLoginCodes {
+		t.Fatalf("%d codes outstanding, want %d", n, maxLoginCodes)
+	}
+	wantLoginRefused(t, login(e.h, "localhost:7878", codes[0])) // evicted
+	for _, c := range codes[1:] {
+		wantStatus(t, login(e.h, "localhost:7878", c), http.StatusSeeOther)
+	}
 }
 
 func TestDockerModeServesNoUI(t *testing.T) {

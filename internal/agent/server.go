@@ -27,8 +27,8 @@ type Config struct {
 	Token        string
 	AllowedHosts []string // e.g. "localhost:7879","127.0.0.1:7879","localhost:7878","127.0.0.1:7878"
 	UIOrigins    []string // "http://localhost:7879","http://127.0.0.1:7879"
-	// UI is non-nil in native mode: it is served at "/" with the token
-	// cookie albert_token (HttpOnly, SameSite=Strict, Path=/).
+	// UI is non-nil in native mode: it is served at "/". It never sets the
+	// token cookie; browsers get that from GET /login (R17).
 	UI      fs.FS
 	Version string
 }
@@ -56,6 +56,7 @@ type server struct {
 	ctx     context.Context // background refreshes stop when it is done
 	refresh coalescer
 	refused refusalLog
+	codes   loginCodes
 	handler http.Handler
 }
 
@@ -77,9 +78,11 @@ func newServer(ctx context.Context, cfg Config, inv *inventory.Inventory, jm *jo
 	api.HandleFunc("GET /api/jobs", s.jobList)
 	api.HandleFunc("GET /api/jobs/{id}", s.job)
 	api.HandleFunc("GET /api/events", s.events)
+	api.HandleFunc("POST /api/login-code", s.loginCode)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/", s.guardAPI(api))
+	mux.HandleFunc("/login", s.login) // both modes: Caddy proxies it in docker mode
 	if cfg.UI != nil {
 		mux.Handle("/", s.uiHandler(http.FileServerFS(cfg.UI)))
 	}
