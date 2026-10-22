@@ -1,0 +1,25 @@
+# The container holds no secret. Browsers authenticate to the agent with a
+# cookie obtained through /login; Caddy only proxies, unchanged. Caddy keeps
+# Host, Origin and Cookie as they arrived, and the agent does all the checks.
+:80 {
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Content-Security-Policy "frame-ancestors 'none'"
+	}
+
+	handle /api/* {
+		reverse_proxy {$ALBERT_AGENT} {
+			flush_interval -1
+		}
+	}
+
+	handle /login {
+		reverse_proxy {$ALBERT_AGENT}
+	}
+
+	handle {
+		root * /srv
+		file_server
+	}
+}
