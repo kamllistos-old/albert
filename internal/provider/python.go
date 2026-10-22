@@ -10,69 +10,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/kamllistos/albert/internal/registry"
 	"github.com/kamllistos/albert/internal/runner"
 )
 
-const (
-	pathTimeout = 5 * time.Second
-	// lookupLimit is how many PyPI lookups run at once per provider.
-	lookupLimit = 8
-
-	pipManagedMsg = "pip refused: this Python is managed by Homebrew. Use uv or pipx for tools."
-)
+const pipManagedMsg = "pip refused: this Python is managed by Homebrew. Use uv or pipx for tools."
 
 var uvLine = regexp.MustCompile(`^(\S+) v(\S+) \((.+)\)$`)
-
-// pyRun runs name with args and returns stdout, or an error built from stderr.
-func pyRun(ctx context.Context, r runner.Runner, name string, args ...string) ([]byte, error) {
-	res, err := r.Run(ctx, name, args...)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", name, err)
-	}
-	if res.ExitCode != 0 {
-		return nil, cmdErr(name, res)
-	}
-	return res.Stdout, nil
-}
-
-// pyStream runs name with args, streaming progress to out.
-func pyStream(ctx context.Context, r runner.Runner, out io.Writer, name string, args ...string) error {
-	code, err := r.Stream(ctx, out, name, args...)
-	if err != nil {
-		return fmt.Errorf("%s: %w", name, err)
-	}
-	if code != 0 {
-		return cmdErr(name, runner.Result{ExitCode: code})
-	}
-	return nil
-}
-
-// pyPath runs a command that prints a directory and returns it trimmed, or ""
-// on any failure.
-func pyPath(r runner.Runner, name string, args ...string) []string {
-	ctx, cancel := context.WithTimeout(context.Background(), pathTimeout)
-	defer cancel()
-	out, err := pyRun(ctx, r, name, args...)
-	if err != nil {
-		return nil
-	}
-	if p := strings.TrimSpace(string(out)); p != "" {
-		return []string{p}
-	}
-	return nil
-}
-
-func checkNames(prefix string, names []string) error {
-	for _, n := range names {
-		if !ValidName(n) {
-			return fmt.Errorf("%s: invalid name %q", prefix, n)
-		}
-	}
-	return nil
-}
 
 // pypiOutdated looks every tool up on PyPI and reports those whose latest
 // release differs from the installed version.
@@ -125,7 +70,7 @@ func (p *uvProvider) Available() bool {
 }
 
 func (p *uvProvider) List(ctx context.Context) ([]Tool, error) {
-	out, err := pyRun(ctx, p.r, "uv", "tool", "list", "--show-paths")
+	out, err := runOutput(ctx, p.r, "uv", "tool", "list", "--show-paths")
 	if err != nil {
 		return nil, err
 	}
@@ -161,23 +106,23 @@ func (p *uvProvider) Upgrade(ctx context.Context, names []string, out io.Writer)
 		return err
 	}
 	if len(names) == 0 {
-		return pyStream(ctx, p.r, out, "uv", "tool", "upgrade", "--all")
+		return runStream(ctx, p.r, out, "uv", "tool", "upgrade", "--all")
 	}
-	return pyStream(ctx, p.r, out, "uv", append([]string{"tool", "upgrade"}, names...)...)
+	return runStream(ctx, p.r, out, "uv", append([]string{"tool", "upgrade"}, names...)...)
 }
 
 func (p *uvProvider) Install(ctx context.Context, name string, out io.Writer) error {
 	if err := checkNames("uv", []string{name}); err != nil {
 		return err
 	}
-	return pyStream(ctx, p.r, out, "uv", "tool", "install", name)
+	return runStream(ctx, p.r, out, "uv", "tool", "install", name)
 }
 
 func (p *uvProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	return pypiSearch(ctx, p.reg, p.Name(), q)
 }
 
-func (p *uvProvider) WatchPaths() []string { return pyPath(p.r, "uv", "tool", "dir") }
+func (p *uvProvider) WatchPaths() []string { return cmdPaths(p.r, "uv", "tool", "dir") }
 
 // ---- pipx ----
 
@@ -197,7 +142,7 @@ func (p *pipxProvider) Available() bool {
 }
 
 func (p *pipxProvider) List(ctx context.Context) ([]Tool, error) {
-	out, err := pyRun(ctx, p.r, "pipx", "list", "--json")
+	out, err := runOutput(ctx, p.r, "pipx", "list", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -244,10 +189,10 @@ func (p *pipxProvider) Upgrade(ctx context.Context, names []string, out io.Write
 		return err
 	}
 	if len(names) == 0 {
-		return pyStream(ctx, p.r, out, "pipx", "upgrade-all")
+		return runStream(ctx, p.r, out, "pipx", "upgrade-all")
 	}
 	for _, n := range names {
-		if err := pyStream(ctx, p.r, out, "pipx", "upgrade", n); err != nil {
+		if err := runStream(ctx, p.r, out, "pipx", "upgrade", n); err != nil {
 			return err
 		}
 	}
@@ -258,7 +203,7 @@ func (p *pipxProvider) Install(ctx context.Context, name string, out io.Writer) 
 	if err := checkNames("pipx", []string{name}); err != nil {
 		return err
 	}
-	return pyStream(ctx, p.r, out, "pipx", "install", name)
+	return runStream(ctx, p.r, out, "pipx", "install", name)
 }
 
 func (p *pipxProvider) Search(ctx context.Context, q string) ([]Result, error) {
@@ -266,7 +211,7 @@ func (p *pipxProvider) Search(ctx context.Context, q string) ([]Result, error) {
 }
 
 func (p *pipxProvider) WatchPaths() []string {
-	return pyPath(p.r, "pipx", "environment", "--value", "PIPX_LOCAL_VENVS")
+	return cmdPaths(p.r, "pipx", "environment", "--value", "PIPX_LOCAL_VENVS")
 }
 
 // ---- pip ----
@@ -291,7 +236,7 @@ type pipEntry struct {
 }
 
 func (p *pipProvider) listJSON(ctx context.Context, args ...string) ([]pipEntry, error) {
-	out, err := pyRun(ctx, p.r, "pip3", args...)
+	out, err := runOutput(ctx, p.r, "pip3", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -412,5 +357,5 @@ func (p *pipProvider) Install(context.Context, string, io.Writer) error { return
 func (p *pipProvider) Search(context.Context, string) ([]Result, error) { return nil, ErrUnsupported }
 
 func (p *pipProvider) WatchPaths() []string {
-	return pyPath(p.r, "python3", "-m", "site", "--user-site")
+	return cmdPaths(p.r, "python3", "-m", "site", "--user-site")
 }
