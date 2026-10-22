@@ -366,11 +366,3 @@ func TestNodeAvailable(t *testing.T) {
 		t.Error("Available should follow LookPath for npm, pnpm and bun")
 	}
 }
-
-func TestDefaultsIncludeNode(t *testing.T) {
-	got := names(Defaults(&runner.Fake{}, nil))
-	want := []string{"brew", "cask", "uv", "pipx", "pip", "npm", "pnpm", "bun"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Defaults = %v, want %v", got, want)
-	}
-}

@@ -1,0 +1,4 @@
+bigdecimal (default: 1.4.1)
+CFPropertyList (2.3.6)
+minitest (5.11.3)
+nokogiri (1.13.8)

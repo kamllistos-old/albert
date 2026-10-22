@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -63,4 +64,21 @@ func checkNames(prefix string, names []string) error {
 		}
 	}
 	return nil
+}
+
+// streamEach runs `name args(target)` once per target, streaming to out. A
+// failure does not stop the remaining targets; all failures are returned
+// joined. It stops early once ctx is done.
+func streamEach(ctx context.Context, r runner.Runner, out io.Writer, name string, targets []string, args func(string) []string) error {
+	var errs []error
+	for _, t := range targets {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if err := runStream(ctx, r, out, name, args(t)...); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
