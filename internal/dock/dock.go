@@ -86,7 +86,7 @@ func (d Docker) build(ctx context.Context, image string, files fs.FS) error {
 	if err := copyBuildContext(files, dir); err != nil {
 		return fmt.Errorf("prepare image build: %w", err)
 	}
-	res, err := d.R.Run(ctx, "docker", "build", "-t", image, "-f", "docker/Dockerfile", dir)
+	res, err := d.R.Run(ctx, "docker", "build", "-t", image, "-f", filepath.Join(dir, "docker", "Dockerfile"), dir)
 	if err != nil {
 		return err
 	}

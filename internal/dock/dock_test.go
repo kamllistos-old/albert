@@ -92,8 +92,8 @@ func TestEnsureImageDevBuildsLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &runner.Fake{Responses: map[string]runner.Result{
-		"docker image inspect albert-ui:dev":                        fail("No such image"),
-		"docker build -t albert-ui:dev -f docker/Dockerfile " + tmp: ok("built"),
+		"docker image inspect albert-ui:dev":                                    fail("No such image"),
+		"docker build -t albert-ui:dev -f " + tmp + "/docker/Dockerfile " + tmp: ok("built"),
 	}}
 	d := Docker{R: f}
 	d.mkTemp = func() (string, error) { return tmp, nil }
@@ -103,8 +103,8 @@ func TestEnsureImageDevBuildsLocally(t *testing.T) {
 	if hasCall(f, "docker pull albert-ui:dev") {
 		t.Fatal("a local image must not be pulled")
 	}
-	if !hasCall(f, "docker build -t albert-ui:dev -f docker/Dockerfile "+tmp) {
-		t.Fatalf("calls = %v, want a docker build with -f docker/Dockerfile", f.Calls)
+	if !hasCall(f, "docker build -t albert-ui:dev -f "+tmp+"/docker/Dockerfile "+tmp) {
+		t.Fatalf("calls = %v, want a docker build with an absolute -f <tmp>/docker/Dockerfile", f.Calls)
 	}
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Fatalf("temp build dir was not cleaned up: %v", err)
@@ -118,9 +118,9 @@ func TestEnsureImageFallsBackToBuildWhenPullFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &runner.Fake{Responses: map[string]runner.Result{
-		"docker image inspect " + img:                             fail("No such image"),
-		"docker pull " + img:                                      fail("denied"),
-		"docker build -t " + img + " -f docker/Dockerfile " + tmp: ok("built"),
+		"docker image inspect " + img: fail("No such image"),
+		"docker pull " + img:          fail("denied"),
+		"docker build -t " + img + " -f " + tmp + "/docker/Dockerfile " + tmp: ok("built"),
 	}}
 	d := Docker{R: f}
 	d.mkTemp = func() (string, error) { return tmp, nil }
@@ -135,8 +135,8 @@ func TestEnsureImageBuildFailureReportsOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := &runner.Fake{Responses: map[string]runner.Result{
-		"docker image inspect albert-ui:dev":                        fail("No such image"),
-		"docker build -t albert-ui:dev -f docker/Dockerfile " + tmp: fail("boom on step 2"),
+		"docker image inspect albert-ui:dev":                                    fail("No such image"),
+		"docker build -t albert-ui:dev -f " + tmp + "/docker/Dockerfile " + tmp: fail("boom on step 2"),
 	}}
 	d := Docker{R: f}
 	d.mkTemp = func() (string, error) { return tmp, nil }
