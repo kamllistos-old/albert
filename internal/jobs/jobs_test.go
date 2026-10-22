@@ -288,7 +288,8 @@ func TestSudoMessage(t *testing.T) {
 	}
 }
 
-func TestSudoOutputFailsEvenWithoutError(t *testing.T) {
+// R13: password text alone does not fail a job whose provider succeeded.
+func TestPasswordTextWithoutErrorStaysSuccess(t *testing.T) {
 	p := &fakeProvider{name: "cask"}
 	p.upgrade = func(_ context.Context, _ []string, w io.Writer) error {
 		io.WriteString(w, "Password:")
@@ -296,7 +297,23 @@ func TestSudoOutputFailsEvenWithoutError(t *testing.T) {
 	}
 	m := newManager(t, p)
 	id, _ := m.Submit("cask", "update", []string{"x"})
-	if j := waitDone(t, m, id); j.Status != StatusFailed || !strings.Contains(j.Message, "needs your password") {
+	if j := waitDone(t, m, id); j.Status != StatusSuccess || j.Message != "" {
+		t.Errorf("got %q %q", j.Status, j.Message)
+	}
+}
+
+// R14: install jobs point at "albert install".
+func TestSudoMessageInstall(t *testing.T) {
+	p := &fakeProvider{name: "cask"}
+	p.install = func(_ context.Context, _ string, w io.Writer) error {
+		io.WriteString(w, "sudo: a terminal is required to read the password\n")
+		return errors.New("exit status 1")
+	}
+	m := newManager(t, p)
+	id, _ := m.Submit("cask", "install", []string{"firefox"})
+	j := waitDone(t, m, id)
+	const want = `This needs your password. Run "albert install firefox" in Terminal.`
+	if j.Status != StatusFailed || j.Message != want {
 		t.Errorf("got %q %q", j.Status, j.Message)
 	}
 }

@@ -190,9 +190,10 @@ func (m *Manager) List() []Job {
 }
 
 // Subscribe returns a channel of events for all jobs. Sending never blocks
-// a job: the channel holds 256 events and when it is full the oldest output
-// lines are dropped to make room, so a slow subscriber can miss lines (the
-// job's Output has them all) but never a Done event. The returned func
+// a job: the channel holds 256 events. When it is full a new line event is
+// dropped; a Done event instead evicts the oldest queued line to make room.
+// So a slow subscriber can miss lines (the job's Output has them all) but
+// never a Done event. The returned func
 // unsubscribes and closes the channel; it is safe to call more than once.
 func (m *Manager) Subscribe() (<-chan Event, func()) {
 	ch := make(chan Event, subBuffer)
@@ -243,9 +244,7 @@ func (m *Manager) run(j *Job) {
 
 	status, msg := StatusSuccess, ""
 	if err := m.exec(j, source, kind, targets); err != nil {
-		status, msg = StatusFailed, m.failMessage(j, targets, err)
-	} else if needsPassword(m.output(j)) {
-		status, msg = StatusFailed, passwordMessage(targets)
+		status, msg = StatusFailed, m.failMessage(j, kind, targets, err)
 	}
 
 	// Refresh before reporting so a client that reloads on Done sees fresh
@@ -292,12 +291,13 @@ func (m *Manager) output(j *Job) string {
 }
 
 // failMessage is what a user is told when a job returned err.
-func (m *Manager) failMessage(j *Job, targets []string, err error) string {
+// Password text in the output only matters when the provider failed.
+func (m *Manager) failMessage(j *Job, kind string, targets []string, err error) string {
 	switch {
 	case errors.Is(err, provider.ErrReadOnly), errors.Is(err, provider.ErrUnsupported):
 		return err.Error()
 	case needsPassword(m.output(j)):
-		return passwordMessage(targets)
+		return passwordMessage(kind, targets)
 	case m.ctx.Err() != nil:
 		return "Albert stopped before this finished."
 	}
@@ -310,12 +310,18 @@ func needsPassword(out string) bool {
 		strings.Contains(out, "Password:")
 }
 
-func passwordMessage(targets []string) string {
+// passwordMessage tells the user to finish the job in Terminal: "albert
+// install" for installs, "albert update" for updates.
+func passwordMessage(kind string, targets []string) string {
+	verb := "update"
+	if kind == KindInstall {
+		verb = "install"
+	}
 	tool := "--all"
 	if len(targets) > 0 {
 		tool = targets[0]
 	}
-	return fmt.Sprintf(`This needs your password. Run "albert update %s" in Terminal.`, tool)
+	return fmt.Sprintf(`This needs your password. Run "albert %s %s" in Terminal.`, verb, tool)
 }
 
 // lineWriter is the io.Writer given to providers. It appends to the job's
