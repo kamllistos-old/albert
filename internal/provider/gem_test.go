@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -192,5 +194,87 @@ func TestDefaultsHasTwelve(t *testing.T) {
 	want := []string{"brew", "cask", "uv", "pipx", "pip", "npm", "pnpm", "bun", "mas", "cargo", "go", "gem"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Defaults = %v, want %v", got, want)
+	}
+}
+
+const gemUserDirKey = "ruby -e print Gem.user_dir"
+
+func TestGemUserDirGemsWritableOnSystemRuby(t *testing.T) {
+	user := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(user, "gems", "nokogiri-1.13.8"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := gemFake(t, gemSystemDir)
+	f.Responses[gemUserDirKey] = runner.Result{Stdout: []byte(user + "\n")}
+	f.Responses["gem update --user-install nokogiri"] = runner.Result{}
+	p := NewGem(f)
+
+	tools, err := p.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tl := range tools {
+		wantRO := tl.Name != "nokogiri"
+		if tl.ReadOnly != wantRO {
+			t.Errorf("%s ReadOnly = %v, want %v", tl.Name, tl.ReadOnly, wantRO)
+		}
+		if tl.Name == "nokogiri" && tl.Path != filepath.Join(user, "gems", "nokogiri-1.13.8") {
+			t.Errorf("nokogiri Path = %q", tl.Path)
+		}
+	}
+
+	f.Calls = nil
+	if err := p.Upgrade(context.Background(), []string{"nokogiri"}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.Calls[len(f.Calls)-1]; last != "gem update --user-install nokogiri" {
+		t.Errorf("last call = %q", last)
+	}
+	// Upgrade-all only touches the writable gem.
+	f.Calls = nil
+	if err := p.Upgrade(context.Background(), nil, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if last := f.Calls[len(f.Calls)-1]; last != "gem update --user-install nokogiri" {
+		t.Errorf("upgrade-all last call = %q", last)
+	}
+	// A system gem is still refused, and nothing runs.
+	f.Calls = nil
+	if err := p.Upgrade(context.Background(), []string{"nokogiri", "minitest"}, &bytes.Buffer{}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("err = %v, want ErrReadOnly", err)
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "gem update") {
+			t.Errorf("ran %q", c)
+		}
+	}
+	want := []string{gemSystemDir + "/gems", filepath.Join(user, "gems")}
+	if got := p.WatchPaths(); !reflect.DeepEqual(got, want) {
+		t.Errorf("WatchPaths = %q, want %q", got, want)
+	}
+}
+
+func TestGemGemdirFailureFailsClosed(t *testing.T) {
+	f := gemFake(t, gemUserDir)
+	f.Responses["gem env gemdir"] = runner.Result{ExitCode: 1, Stderr: []byte("boom\n")}
+	p := NewGem(f)
+	tools, err := p.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tl := range tools {
+		if !tl.ReadOnly {
+			t.Errorf("%s should be read-only when gemdir is unknown", tl.Name)
+		}
+	}
+	for _, names := range [][]string{nil, {"nokogiri"}} {
+		if err := p.Upgrade(context.Background(), names, &bytes.Buffer{}); !errors.Is(err, ErrReadOnly) {
+			t.Errorf("Upgrade(%v) err = %v, want ErrReadOnly", names, err)
+		}
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "gem update") {
+			t.Errorf("ran %q", c)
+		}
 	}
 }

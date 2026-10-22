@@ -43,6 +43,7 @@ func cargoFake(t *testing.T) *runner.Fake {
 	return &runner.Fake{Responses: map[string]runner.Result{
 		cargoListKey:            {Stdout: fixture(t, "cargo_list.txt")},
 		"cargo install bat":     {},
+		"cargo install fd-find": {},
 		"cargo install ripgrep": {},
 	}}
 }
@@ -84,10 +85,10 @@ func TestCargoOutdatedNeedsRegistry(t *testing.T) {
 func TestCargoUpgradeNamed(t *testing.T) {
 	f := cargoFake(t)
 	var out bytes.Buffer
-	if err := NewCargo(f, nil).Upgrade(context.Background(), []string{"ripgrep", "bat"}, &out); err != nil {
+	if err := NewCargo(f, nil).Upgrade(context.Background(), []string{"ripgrep", "fd-find"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"cargo install ripgrep", "cargo install bat"}
+	want := []string{cargoListKey, "cargo install ripgrep", "cargo install fd-find"}
 	if !reflect.DeepEqual(f.Calls, want) {
 		t.Errorf("Calls = %q, want %q", f.Calls, want)
 	}
@@ -124,12 +125,12 @@ func TestCargoUpgradeAllChecksDerivedNames(t *testing.T) {
 func TestCargoUpgradeContinuesAfterFailure(t *testing.T) {
 	f := cargoFake(t)
 	f.Responses["cargo install ripgrep"] = runner.Result{ExitCode: 101, Stderr: []byte("error: boom\n")}
-	err := NewCargo(f, nil).Upgrade(context.Background(), []string{"ripgrep", "bat"}, &bytes.Buffer{})
+	err := NewCargo(f, nil).Upgrade(context.Background(), []string{"ripgrep", "fd-find"}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "exit code 101") {
 		t.Fatalf("err = %v", err)
 	}
-	if !reflect.DeepEqual(f.Calls, []string{"cargo install ripgrep", "cargo install bat"}) {
-		t.Errorf("Calls = %q, want bat still attempted", f.Calls)
+	if !reflect.DeepEqual(f.Calls, []string{cargoListKey, "cargo install ripgrep", "cargo install fd-find"}) {
+		t.Errorf("Calls = %q, want fd-find still attempted", f.Calls)
 	}
 }
 
@@ -174,5 +175,49 @@ func TestCargoAvailable(t *testing.T) {
 	f := &runner.Fake{Missing: map[string]bool{"cargo": true}}
 	if p := NewCargo(f, nil); p.Name() != "cargo" || p.Available() {
 		t.Error("Name/Available wrong")
+	}
+}
+
+func TestCargoSourceInstalledCratesAreNotRegistryCrates(t *testing.T) {
+	// crates.io has a different "bat" (0.99.0) than the one built from /Users/x/src/bat.
+	reg := cargoRegistry(t, map[string]string{"ripgrep": "14.2.0", "bat": "0.99.0"})
+	f := cargoFake(t)
+	p := NewCargo(f, reg)
+
+	ups, err := p.Outdated(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range ups {
+		if u.Name == "bat" {
+			t.Errorf("Outdated reports source-installed bat: %+v", u)
+		}
+	}
+	if len(ups) != 1 || ups[0].Name != "ripgrep" {
+		t.Errorf("Outdated = %+v, want only ripgrep", ups)
+	}
+
+	f.Calls = nil
+	if err := p.Upgrade(context.Background(), nil, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{cargoListKey, "cargo install ripgrep"}; !reflect.DeepEqual(f.Calls, want) {
+		t.Errorf("upgrade-all Calls = %q, want %q", f.Calls, want)
+	}
+
+	f.Calls = nil
+	err = p.Upgrade(context.Background(), []string{"bat"}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "installed from a local path or git") {
+		t.Fatalf("explicit Upgrade(bat) err = %v", err)
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "cargo install ") && c != cargoListKey {
+			t.Errorf("ran %q", c)
+		}
+	}
+	// Source-installed crates are still listed.
+	tools, _ := p.List(context.Background())
+	if len(tools) != 2 {
+		t.Errorf("List = %+v, want both crates", tools)
 	}
 }

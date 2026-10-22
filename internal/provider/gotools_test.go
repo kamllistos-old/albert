@@ -261,3 +261,39 @@ func TestGoWatchPathsAndAvailable(t *testing.T) {
 		t.Error("Name/Available wrong")
 	}
 }
+
+// goErrRunner fails every `go version -m` with err, or with ctx.Err() when err
+// is nil, standing in for a runner whose command timed out.
+type goErrRunner struct {
+	*runner.Fake
+	err error
+}
+
+func (g goErrRunner) Run(ctx context.Context, name string, args ...string) (runner.Result, error) {
+	if name == "go" && len(args) > 0 && args[0] == "version" {
+		if g.err != nil {
+			return runner.Result{}, g.err
+		}
+		if err := ctx.Err(); err != nil {
+			return runner.Result{}, err
+		}
+	}
+	return g.Fake.Run(ctx, name, args...)
+}
+
+func TestGoListReturnsRunnerAndContextErrors(t *testing.T) {
+	dir := goBinDir(t, "a", "goimports")
+	fake := goFake(dir, map[string]string{"goimports": goVersionM(t), "a": goVersionM(t)})
+
+	boom := errors.New("boom")
+	if _, err := NewGo(goErrRunner{Fake: fake, err: boom}, nil).List(context.Background()); !errors.Is(err, boom) {
+		t.Errorf("runner error: err = %v, want boom", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	tools, err := NewGo(goErrRunner{Fake: fake}, nil).List(ctx)
+	if !errors.Is(err, context.Canceled) || tools != nil {
+		t.Errorf("canceled ctx: tools = %+v, err = %v, want nil and context.Canceled", tools, err)
+	}
+}

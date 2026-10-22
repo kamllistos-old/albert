@@ -2,9 +2,12 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/kamllistos/albert/internal/runner"
@@ -35,11 +38,23 @@ func (p *gemProvider) gemDir() string {
 	return ""
 }
 
+// userDir returns the user gem directory, or "" if it cannot be read.
+func (p *gemProvider) userDir() string {
+	if dirs := cmdPaths(p.r, "ruby", "-e", "print Gem.user_dir"); len(dirs) > 0 {
+		return dirs[0]
+	}
+	return ""
+}
+
 // systemGemDir reports whether dir belongs to macOS's own Ruby, which Albert
 // must not touch.
 func systemGemDir(dir string) bool {
 	return strings.HasPrefix(dir, "/System/") || strings.HasPrefix(dir, "/Library/")
 }
+
+// writableGemDir reports whether gems in dir can be changed without sudo. An
+// unknown dir fails closed.
+func writableGemDir(dir string) bool { return dir != "" && !systemGemDir(dir) }
 
 // gemParse reads `gem list` / `gem search` lines into name and first version.
 // Default gems, which ship with Ruby, are skipped when skipDefault is set.
@@ -60,22 +75,42 @@ func gemParse(out []byte, skipDefault bool) (names, versions []string) {
 }
 
 func (p *gemProvider) List(ctx context.Context) ([]Tool, error) {
+	return p.list(ctx, p.gemDir())
+}
+
+// list builds the tool list for the given gem dir. A gem is read-only unless
+// its dir is writable or it lives under the user gem dir, which stays
+// writable even on system Ruby.
+func (p *gemProvider) list(ctx context.Context, dir string) ([]Tool, error) {
 	out, err := runOutput(ctx, p.r, "gem", "list", "--local")
 	if err != nil {
 		return nil, err
 	}
-	dir := p.gemDir()
-	readOnly := systemGemDir(dir)
+	var user string
+	if !writableGemDir(dir) {
+		user = p.userDir()
+	}
 	names, versions := gemParse(out, true)
 	tools := make([]Tool, len(names))
 	for i := range names {
-		t := Tool{Name: names[i], Source: p.Name(), Version: versions[i], ReadOnly: readOnly}
-		if dir != "" {
-			t.Path = filepath.Join(dir, "gems", names[i]+"-"+versions[i])
+		t := Tool{Name: names[i], Source: p.Name(), Version: versions[i], ReadOnly: !writableGemDir(dir)}
+		leaf := names[i] + "-" + versions[i]
+		if user != "" {
+			if up := filepath.Join(user, "gems", leaf); isDir(up) {
+				t.Path, t.ReadOnly = up, false
+			}
+		}
+		if t.Path == "" && dir != "" {
+			t.Path = filepath.Join(dir, "gems", leaf)
 		}
 		tools[i] = t
 	}
 	return tools, nil
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 func (p *gemProvider) Outdated(ctx context.Context) ([]Update, error) {
@@ -93,13 +128,44 @@ func (p *gemProvider) Outdated(ctx context.Context) ([]Update, error) {
 }
 
 func (p *gemProvider) Upgrade(ctx context.Context, names []string, out io.Writer) error {
-	if systemGemDir(p.gemDir()) {
-		return ErrReadOnly
-	}
 	if err := checkNames("gem", names); err != nil {
 		return err
 	}
-	return runStream(ctx, p.r, out, "gem", append([]string{"update"}, names...)...)
+	dir := p.gemDir()
+	if writableGemDir(dir) {
+		return runStream(ctx, p.r, out, "gem", append([]string{"update"}, names...)...)
+	}
+	// System Ruby, or gemdir unknown: only gems under the user gem dir can be
+	// updated, with --user-install.
+	tools, err := p.list(ctx, dir)
+	if err != nil {
+		return err
+	}
+	writable := make(map[string]bool, len(tools))
+	known := make(map[string]bool, len(tools))
+	var all []string
+	for _, t := range tools {
+		known[t.Name] = true
+		if !t.ReadOnly {
+			writable[t.Name] = true
+			all = append(all, t.Name)
+		}
+	}
+	if len(names) == 0 {
+		names = all
+	}
+	if len(names) == 0 {
+		return ErrReadOnly
+	}
+	for _, n := range names {
+		if !writable[n] {
+			if !known[n] {
+				return fmt.Errorf("gem: %q is not installed", n)
+			}
+			return ErrReadOnly
+		}
+	}
+	return runStream(ctx, p.r, out, "gem", append([]string{"update", "--user-install"}, names...)...)
 }
 
 func (p *gemProvider) Install(ctx context.Context, name string, out io.Writer) error {
@@ -127,8 +193,14 @@ func (p *gemProvider) Search(ctx context.Context, q string) ([]Result, error) {
 }
 
 func (p *gemProvider) WatchPaths() []string {
+	var ps []string
 	if dir := p.gemDir(); dir != "" {
-		return []string{filepath.Join(dir, "gems")}
+		ps = append(ps, filepath.Join(dir, "gems"))
 	}
-	return nil
+	if user := p.userDir(); user != "" {
+		if up := filepath.Join(user, "gems"); !slices.Contains(ps, up) {
+			ps = append(ps, up)
+		}
+	}
+	return ps
 }

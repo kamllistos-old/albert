@@ -76,7 +76,10 @@ func (p *goProvider) scan(ctx context.Context) ([]goBin, error) {
 		}
 		file := filepath.Join(dir, e.Name())
 		res, err := p.r.Run(ctx, "go", "version", "-m", file)
-		if err != nil || res.ExitCode != 0 {
+		if err != nil {
+			return nil, fmt.Errorf("go: %w", err) // includes ctx expiry: no truncated lists
+		}
+		if res.ExitCode != 0 {
 			continue // not a Go binary
 		}
 		if b, ok := parseGoVersionM(string(res.Stdout)); ok {
