@@ -211,7 +211,14 @@ func (p *brewProvider) Upgrade(ctx context.Context, names []string, out io.Write
 			return fmt.Errorf("brew: invalid name %q", n)
 		}
 	}
-	return p.stream(ctx, out, append([]string{"upgrade", p.kind()}, names...)...)
+	args := append([]string{"upgrade", p.kind()}, names...)
+	if p.cask && len(names) == 0 {
+		// Match Outdated: auto-updating casks are listed there, so upgrade
+		// them too or "update all" never clears them. Named upgrades are
+		// already explicit and need no flag.
+		args = []string{"upgrade", "--cask", "--greedy-auto-updates"}
+	}
+	return p.stream(ctx, out, args...)
 }
 
 func (p *brewProvider) Install(ctx context.Context, name string, out io.Writer) error {

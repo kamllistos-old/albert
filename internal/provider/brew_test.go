@@ -120,6 +120,20 @@ func TestBrewUpgradeAll(t *testing.T) {
 	}
 }
 
+func TestCaskUpgradeAllIsGreedy(t *testing.T) {
+	// Outdated lists auto-updating casks (--greedy-auto-updates), so "update
+	// all" must upgrade them too or they never clear.
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		"brew upgrade --cask --greedy-auto-updates": {},
+	}}
+	if err := NewCask(f).Upgrade(context.Background(), nil, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Calls) != 1 || f.Calls[0] != "brew upgrade --cask --greedy-auto-updates" {
+		t.Errorf("calls = %q", f.Calls)
+	}
+}
+
 func TestBrewUpgradeNames(t *testing.T) {
 	f := &runner.Fake{Responses: map[string]runner.Result{
 		"brew upgrade --formula jq wget": {},
