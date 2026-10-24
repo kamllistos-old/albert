@@ -181,12 +181,7 @@ func (p *pipxProvider) Upgrade(ctx context.Context, names []string, out io.Write
 	if len(names) == 0 {
 		return runStream(ctx, p.r, out, "pipx", "upgrade-all")
 	}
-	for _, n := range names {
-		if err := runStream(ctx, p.r, out, "pipx", "upgrade", n); err != nil {
-			return err
-		}
-	}
-	return nil
+	return streamEach(ctx, p.r, out, "pipx", names, func(n string) []string { return []string{"upgrade", n} })
 }
 
 func (p *pipxProvider) Install(ctx context.Context, name string, out io.Writer) error {

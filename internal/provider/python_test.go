@@ -267,16 +267,17 @@ func TestPipxUpgradeAll(t *testing.T) {
 	}
 }
 
-func TestPipxUpgradeNamesOneAtATime(t *testing.T) {
+func TestPipxUpgradeNamesContinuesAfterFailure(t *testing.T) {
 	f := pipxFake(t)
 	f.Responses["pipx upgrade httpie"] = runner.Result{ExitCode: 1, Stderr: []byte("no such venv\n")}
+	f.Responses["pipx upgrade ruff"] = runner.Result{}
 	err := NewPipx(f, nil).Upgrade(context.Background(), []string{"black", "httpie", "ruff"}, &strings.Builder{})
 	if err == nil || !strings.Contains(err.Error(), "pipx: exit code 1") {
 		t.Fatalf("err = %v", err)
 	}
-	want := "pipx upgrade black|pipx upgrade httpie"
+	want := "pipx upgrade black|pipx upgrade httpie|pipx upgrade ruff"
 	if got := strings.Join(f.Calls, "|"); got != want {
-		t.Errorf("calls = %q, want %q (stop at first failure)", got, want)
+		t.Errorf("calls = %q, want %q (a failure must not skip the rest)", got, want)
 	}
 }
 
