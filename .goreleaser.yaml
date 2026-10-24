@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: albert
+
+builds:
+  - id: albert
+    main: ./cmd/albert
+    binary: albert
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - arm64
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+# Archive names are albert_darwin_arm64.tar.gz and albert_darwin_amd64.tar.gz.
+# install.sh downloads exactly these names, so change both together.
+archives:
+  - id: albert
+    formats:
+      - tar.gz
+    name_template: "albert_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
