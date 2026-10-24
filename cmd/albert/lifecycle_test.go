@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -621,6 +622,57 @@ func TestAgentCommandRejectsBadFlags(t *testing.T) {
 		h := newApp("", false)
 		if code := cmdAgent(h.a, args); code != exitUsage {
 			t.Errorf("agent %v = %d, want %d", args, code, exitUsage)
+		}
+	}
+}
+
+func TestUpSavesStateRightAfterSpawn(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	var seen []state.State
+	healthy := h.l.health
+	h.l.health = func(port int, token string) bool {
+		if len(h.w.spawned) > 0 { // only the waits after spawn
+			st, ok := loadState(t, h.l.dir)
+			if !ok {
+				t.Error("no state file while waiting for the new agent")
+			}
+			seen = append(seen, st)
+		}
+		return healthy(port, token)
+	}
+	if code := h.l.up(false, true); code != 0 {
+		t.Fatalf("up = %d, out:\n%s", code, h.out)
+	}
+	if len(seen) == 0 {
+		t.Fatal("health never checked after spawn")
+	}
+	agentPort, _ := strconv.Atoi(flagValue(t, h.w.spawned[0], "--port"))
+	uiPort, _ := strconv.Atoi(flagValue(t, h.w.spawned[0], "--ui-port"))
+	if st := seen[0]; st.PID != 5001 || st.AgentPort != agentPort || st.UIPort != uiPort || st.Mode != "docker" {
+		t.Fatalf("state before health OK = %+v", st)
+	}
+}
+
+func TestUpCancelledWhileWaitingKillsAgent(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	h.w.neverUp = true
+	ctx, cancel := context.WithCancel(context.Background())
+	h.l.ctx = ctx
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }() // Terminal closed / Ctrl-C
+	if code := h.l.up(true, false); code != 1 {
+		t.Fatalf("up = %d, want 1; out:\n%s", code, h.out)
+	}
+	if !slices.Equal(h.w.killed, []int{5001}) {
+		t.Fatalf("killed %v, want the agent 5001", h.w.killed)
+	}
+	noFile(t, filepath.Join(h.l.dir, "state.json"))
+	noFile(t, filepath.Join(h.l.dir, "token"))
+}
+
+func TestCLISignalsCancelContext(t *testing.T) {
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP} {
+		if !slices.Contains(cliSignals, sig) {
+			t.Errorf("cliSignals %v missing %v", cliSignals, sig)
 		}
 	}
 }

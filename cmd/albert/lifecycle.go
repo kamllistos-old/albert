@@ -167,6 +167,13 @@ func (l *lifecycle) up(native, noOpen bool) int {
 		_ = state.Clear(l.dir)
 		return exitFail
 	}
+	// Save state at once, so "albert down" can find the agent even if this
+	// process dies (Terminal closed, SIGKILL) before it is ready.
+	st := state.State{PID: pid, AgentPort: agentPort, UIPort: uiPort, Mode: mode, Started: time.Now()}
+	if err := state.Save(l.dir, st); err != nil {
+		fmt.Fprintf(l.out, "Albert couldn't save its settings in %s: %v\n", l.dir, err)
+		return fail()
+	}
 	if !l.waitHealthy(ctx, agentPort, tok) {
 		fmt.Fprintf(l.out, "Albert couldn't start. Details: %s\n", logPath)
 		return fail()
@@ -188,14 +195,6 @@ func (l *lifecycle) up(native, noOpen bool) int {
 		}
 	}
 
-	st := state.State{PID: pid, AgentPort: agentPort, UIPort: uiPort, Mode: mode, Started: time.Now()}
-	if err := state.Save(l.dir, st); err != nil {
-		fmt.Fprintf(l.out, "Albert couldn't save its settings in %s: %v\n", l.dir, err)
-		if mode == "docker" {
-			_ = l.docker.Stop(ctx)
-		}
-		return fail()
-	}
 	fmt.Fprintf(l.out, "Albert is running at %s\n", uiURL(uiPort))
 	fmt.Fprintln(l.out, "Stop it any time with: albert down")
 	if !noOpen {

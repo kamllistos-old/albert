@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/kamllistos/albert/internal/dock"
 	"github.com/kamllistos/albert/internal/provider"
@@ -176,8 +177,13 @@ func isTerminal(f *os.File) bool {
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
+// cliSignals cancel the command's context instead of killing the process,
+// so a command can clean up: Ctrl-C, closing the Terminal window (SIGHUP)
+// and a plain kill (SIGTERM).
+var cliSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), cliSignals...)
 	a := &app{
 		providers: provider.Defaults(runner.Exec{Stdin: os.Stdin}, registry.New()),
 		stdout:    os.Stdout,
