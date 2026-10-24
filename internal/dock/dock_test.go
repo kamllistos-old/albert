@@ -226,3 +226,16 @@ func TestStopOK(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHasImage(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		"docker image inspect albert-ui:dev": ok("[]"),
+	}}
+	d := Docker{R: f}
+	if !d.HasImage(context.Background(), "albert-ui:dev") {
+		t.Fatal("HasImage false for a present image")
+	}
+	if d.HasImage(context.Background(), "ghcr.io/kamllistos/albert-ui:1.0.0") {
+		t.Fatal("HasImage true for a missing image")
+	}
+}

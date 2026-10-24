@@ -52,6 +52,12 @@ func (d Docker) Ready(ctx context.Context) error {
 	return nil
 }
 
+// HasImage reports whether image is already present locally.
+func (d Docker) HasImage(ctx context.Context, image string) bool {
+	res, err := d.R.Run(ctx, "docker", "image", "inspect", image)
+	return err == nil && res.ExitCode == 0
+}
+
 // EnsureImage makes sure image exists locally: it uses an existing one,
 // otherwise pulls it (registry images only), otherwise builds it from the web/
 // and docker/ directories of files.

@@ -34,7 +34,7 @@ type app struct {
 	stdout, stderr io.Writer
 	stdin          io.Reader
 	isTTY          bool
-	docker         interface{ Ready(context.Context) error }
+	docker         dockerControl
 	ctx            context.Context // nil means context.Background()
 }
 
@@ -50,6 +50,10 @@ type command func(a *app, args []string) int
 
 // commands is the one place sub-commands are registered.
 var commands = map[string]command{
+	"up":       cmdUp,
+	"down":     cmdDown,
+	"status":   cmdStatus,
+	"agent":    cmdAgent, // hidden: run by "albert up" in the background
 	"list":     cmdList,
 	"outdated": cmdOutdated,
 	"update":   cmdUpdate,
@@ -64,8 +68,9 @@ const helpText = `Albert shows the tools installed on this Mac and keeps them up
 Usage: albert <command> [options]
 
 Commands:
-  up         Open Albert in your browser
+  up         Open Albert in your browser     [--native] [--no-open]
   down       Stop Albert
+  status     Show whether Albert is running
   list       Show installed tools            [--source S] [--outdated] [--deps] [--json]
   outdated   Show tools with a newer version [--source S]
   update     Update one tool or all of them  <tool> | --all  [--source S] [--include-pip]

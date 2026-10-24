@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"strings"
 	"sync"
 	"testing"
@@ -58,7 +59,11 @@ func (f *fakeProvider) WatchPaths() []string { return nil }
 
 type fakeDocker struct{ err error }
 
-func (d fakeDocker) Ready(context.Context) error { return d.err }
+func (d fakeDocker) Ready(context.Context) error                      { return d.err }
+func (d fakeDocker) HasImage(context.Context, string) bool            { return false }
+func (d fakeDocker) EnsureImage(context.Context, string, fs.FS) error { return nil }
+func (d fakeDocker) Start(context.Context, string, int, int) error    { return nil }
+func (d fakeDocker) Stop(context.Context) error                       { return nil }
 
 type harness struct {
 	a           *app
