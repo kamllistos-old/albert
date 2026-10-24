@@ -1,8 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -66,10 +66,12 @@ func TestBearerSchemeCaseInsensitive(t *testing.T) {
 	wantStatus(t, w, http.StatusOK)
 }
 
-func TestCookieTokenAccepted(t *testing.T) {
+// R20: cookies are sent to every localhost port, so the token cookie is no
+// longer accepted, even with the right value.
+func TestCookieNoLongerAccepted(t *testing.T) {
 	e := newEnv(t, testConfig())
-	wantStatus(t, serve(e.h, request("GET", "/api/health", "", withCookie(testToken))), http.StatusOK)
-	wantStatus(t, serve(e.h, request("POST", "/api/refresh", "", withCookie(testToken))), http.StatusAccepted)
+	wantError(t, serve(e.h, request("GET", "/api/health", "", withCookie(testToken))), http.StatusUnauthorized)
+	wantError(t, serve(e.h, request("POST", "/api/refresh", "", withCookie(testToken))), http.StatusUnauthorized)
 }
 
 func TestEmptyConfiguredTokenDeniesAll(t *testing.T) {
@@ -94,7 +96,7 @@ func TestForeignHost403(t *testing.T) {
 			wantError(t, serve(e.h, request("GET", "/api/health", "", withHost(host))), http.StatusForbidden)
 			// Host is checked before the token: no token, still 403.
 			wantError(t, serve(e.h, request("GET", "/api/health", "", withHost(host), withoutHeader("Authorization"))), http.StatusForbidden)
-			// The native UI (which hands out the token cookie) is guarded too.
+			// The native UI is guarded too.
 			w := serve(e.h, request("GET", "/", "", withHost(host), withoutHeader("Authorization")))
 			wantError(t, w, http.StatusForbidden)
 			if c := w.Header().Get("Set-Cookie"); c != "" {
@@ -192,16 +194,6 @@ func nativeConfig() Config {
 	return cfg
 }
 
-func tokenCookieFrom(w *httptest.ResponseRecorder) *http.Cookie {
-	res := http.Response{Header: w.Header()}
-	for _, c := range res.Cookies() {
-		if c.Name == "albert_token" {
-			return c
-		}
-	}
-	return nil
-}
-
 // mintCode asks for a login code the way "albert up" does.
 func mintCode(t *testing.T, h http.Handler) string {
 	t.Helper()
@@ -214,24 +206,37 @@ func mintCode(t *testing.T, h http.Handler) string {
 	return code
 }
 
-// login opens /login?code= the way a browser does: no token, typed URL.
-func login(h http.Handler, host, code string) *httptest.ResponseRecorder {
-	return serve(h, request("GET", "/login?code="+code, "", withoutHeader("Authorization"), withHost(host),
-		withHeader("Sec-Fetch-Site", "none")))
+// exchange trades a code at POST /api/session the way the UI does: from its
+// own origin, with the safety header, and with no token yet.
+func exchange(h http.Handler, code string, mods ...func(*http.Request)) *httptest.ResponseRecorder {
+	body, _ := json.Marshal(map[string]string{"code": code})
+	base := []func(*http.Request){
+		withoutHeader("Authorization"),
+		withHost("localhost:7879"),
+		withHeader("Origin", "http://localhost:7879"),
+		withHeader("Sec-Fetch-Site", "same-origin"),
+	}
+	return serve(h, request("POST", "/api/session", string(body), append(base, mods...)...))
 }
 
-func wantLoginRefused(t *testing.T, w *httptest.ResponseRecorder) {
+func wantToken(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()
-	wantStatus(t, w, http.StatusForbidden)
-	if c := w.Header().Get("Set-Cookie"); c != "" {
-		t.Fatalf("refused login set a cookie: %s", c)
+	wantStatus(t, w, http.StatusOK)
+	tok := decode[map[string]string](t, w)["token"]
+	if tok != testToken {
+		t.Fatalf("token = %q, want the agent token", tok)
 	}
-	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("Content-Type = %q, want text/html", ct)
+	return tok
+}
+
+func wantExchangeRefused(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	msg := wantError(t, w, http.StatusForbidden)
+	if strings.Contains(w.Body.String(), testToken) {
+		t.Fatalf("refused exchange leaked the token: %s", w.Body.String())
 	}
-	const msg = `This Albert link has expired. Run "albert up" again to open Albert.`
-	if !strings.Contains(html.UnescapeString(w.Body.String()), msg) {
-		t.Fatalf("body = %q, want the expired-link message", w.Body.String())
+	if want := `This Albert link has expired. Run "albert up" again to open Albert.`; msg != want {
+		t.Fatalf("error = %q, want %q", msg, want)
 	}
 }
 
@@ -257,49 +262,42 @@ func TestNativeIndexSetsNoCookie(t *testing.T) {
 	}
 }
 
-func TestLoginSetsStrictCookieAndRedirects(t *testing.T) {
+func TestSessionExchangeReturnsToken(t *testing.T) {
 	for name, cfg := range map[string]Config{"native": nativeConfig(), "docker": testConfig()} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t, cfg)
-			w := login(e.h, "localhost:7879", mintCode(t, e.h))
-			wantStatus(t, w, http.StatusSeeOther)
-			if loc := w.Header().Get("Location"); loc != "/" {
-				t.Errorf("Location = %q, want /", loc)
-			}
-			c := tokenCookieFrom(w)
-			if c == nil {
-				t.Fatalf("no albert_token cookie; Set-Cookie = %q", w.Header().Values("Set-Cookie"))
-			}
-			if c.Value != testToken || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Path != "/" {
-				t.Fatalf("cookie = %+v, want token value, HttpOnly, SameSite=Strict, Path=/", c)
-			}
+			w := exchange(e.h, mintCode(t, e.h))
+			tok := wantToken(t, w)
 			if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
 				t.Errorf("Cache-Control = %q, want no-store", cc)
 			}
-			// The cookie authenticates API calls.
-			wantStatus(t, serve(e.h, request("GET", "/api/tools", "", withCookie(c.Value))), http.StatusOK)
+			if c := w.Header().Values("Set-Cookie"); len(c) != 0 {
+				t.Fatalf("session exchange set cookies %q", c)
+			}
+			// The token authenticates API calls as a Bearer header.
+			wantStatus(t, serve(e.h, request("GET", "/api/tools", "", withHeader("Authorization", "Bearer "+tok))), http.StatusOK)
 		})
 	}
 }
 
-func TestLoginCodeSingleUse(t *testing.T) {
+func TestSessionCodeSingleUse(t *testing.T) {
 	e := newEnv(t, nativeConfig())
 	code := mintCode(t, e.h)
-	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
-	wantLoginRefused(t, login(e.h, "localhost:7878", code))
+	wantToken(t, exchange(e.h, code))
+	wantExchangeRefused(t, exchange(e.h, code))
 }
 
-func TestLoginCodeExpires(t *testing.T) {
+func TestSessionCodeExpires(t *testing.T) {
 	old := loginCodeTTL
 	loginCodeTTL = 20 * time.Millisecond
 	t.Cleanup(func() { loginCodeTTL = old })
 	e := newEnv(t, nativeConfig())
 	code := mintCode(t, e.h)
 	time.Sleep(40 * time.Millisecond)
-	wantLoginRefused(t, login(e.h, "localhost:7878", code))
+	wantExchangeRefused(t, exchange(e.h, code))
 }
 
-func TestLoginRejectsBadCodes(t *testing.T) {
+func TestSessionRejectsBadCodes(t *testing.T) {
 	e := newEnv(t, nativeConfig())
 	code := mintCode(t, e.h)
 	bad := []string{"", "nope", code[:31], code + "0", strings.Repeat("0", 32)}
@@ -307,38 +305,81 @@ func TestLoginRejectsBadCodes(t *testing.T) {
 		bad = append(bad, up)
 	}
 	for _, b := range bad {
-		wantLoginRefused(t, login(e.h, "localhost:7878", b))
+		wantExchangeRefused(t, exchange(e.h, b))
 	}
-	// No code parameter at all.
-	wantLoginRefused(t, serve(e.h, request("GET", "/login", "", withoutHeader("Authorization"))))
+	// Bodies that are not a code at all.
+	for _, body := range []string{"", "{}", `{"code":1}`, `{"code":"` + code + `","x":1}`, "not json"} {
+		w := serve(e.h, request("POST", "/api/session", body, withoutHeader("Authorization")))
+		if w.Code == http.StatusOK {
+			t.Fatalf("body %q was accepted", body)
+		}
+	}
 	// The real code still works after all those misses.
-	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+	wantToken(t, exchange(e.h, code))
 }
 
-func TestLoginForeignHost403(t *testing.T) {
+func TestSessionForeignHostOrOriginRefused(t *testing.T) {
 	e := newEnv(t, nativeConfig())
 	code := mintCode(t, e.h)
-	for _, host := range []string{"evil.com:7879", "evil.com", ""} {
-		w := login(e.h, host, code)
-		wantStatus(t, w, http.StatusForbidden)
-		if c := w.Header().Get("Set-Cookie"); c != "" {
-			t.Fatalf("host %q got a cookie: %s", host, c)
+	refused := [][]func(*http.Request){
+		{withHost("evil.com:7879")},
+		{withHost("evil.com")},
+		{withHost("")},
+		{withHeader("Origin", "http://evil.com")},
+		{withHeader("Origin", "http://localhost:3000")},
+		{withHeader("Origin", "null")},
+		{withHeader("Sec-Fetch-Site", "cross-site")},
+		{withHeader("Sec-Fetch-Site", "same-site")},
+	}
+	for i, mods := range refused {
+		w := exchange(e.h, code, mods...)
+		wantError(t, w, http.StatusForbidden)
+		if strings.Contains(w.Body.String(), testToken) {
+			t.Fatalf("case %d leaked the token", i)
 		}
 	}
 	// The code was not consumed by the refused attempts.
-	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+	wantToken(t, exchange(e.h, code))
 }
 
-func TestLoginNotConsumedByOtherMethods(t *testing.T) {
+func TestSessionNeedsSafetyHeader(t *testing.T) {
 	e := newEnv(t, nativeConfig())
 	code := mintCode(t, e.h)
-	for _, m := range []string{"HEAD", "POST"} {
-		w := serve(e.h, request(m, "/login?code="+code, "", withoutHeader("Authorization")))
-		if w.Code == http.StatusSeeOther || tokenCookieFrom(w) != nil {
-			t.Fatalf("%s /login logged in: status %d", m, w.Code)
+	w := exchange(e.h, code, withoutHeader("X-Albert-Request"))
+	wantError(t, w, http.StatusForbidden)
+	if strings.Contains(w.Body.String(), testToken) {
+		t.Fatal("leaked the token")
+	}
+	wantToken(t, exchange(e.h, code))
+}
+
+// The token check is skipped for POST /api/session and nothing else.
+func TestSessionOnlyRouteExemptFromToken(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	for _, r := range []*http.Request{
+		request("GET", "/api/session", "", withoutHeader("Authorization")),
+		request("POST", "/api/session/", `{"code":"`+code+`"}`, withoutHeader("Authorization")),
+		request("POST", "/api/sessions", `{"code":"`+code+`"}`, withoutHeader("Authorization")),
+		request("POST", "/api/login-code", "", withoutHeader("Authorization")),
+		request("GET", "/api/tools", "", withoutHeader("Authorization")),
+	} {
+		if w := serve(e.h, r); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s without a token: status %d, want 401", r.Method, r.URL.Path, w.Code)
 		}
 	}
-	wantStatus(t, login(e.h, "localhost:7878", code), http.StatusSeeOther)
+	wantToken(t, exchange(e.h, code))
+}
+
+func TestLoginRouteRemoved(t *testing.T) {
+	e := newEnv(t, nativeConfig())
+	code := mintCode(t, e.h)
+	w := serve(e.h, request("GET", "/login?code="+code, "", withoutHeader("Authorization")))
+	if w.Code == http.StatusSeeOther || len(w.Header().Values("Set-Cookie")) != 0 {
+		t.Fatalf("/login still logs in: status %d, cookies %q", w.Code, w.Header().Values("Set-Cookie"))
+	}
+	// It did not use up the code either.
+	wantToken(t, exchange(e.h, code))
 }
 
 func TestLoginCodeEndpointGuarded(t *testing.T) {
@@ -362,9 +403,9 @@ func TestLoginCodesCappedOldestEvicted(t *testing.T) {
 	if n := e.h.(*server).codes.outstanding(); n != maxLoginCodes {
 		t.Fatalf("%d codes outstanding, want %d", n, maxLoginCodes)
 	}
-	wantLoginRefused(t, login(e.h, "localhost:7878", codes[0])) // evicted
+	wantExchangeRefused(t, exchange(e.h, codes[0])) // evicted
 	for _, c := range codes[1:] {
-		wantStatus(t, login(e.h, "localhost:7878", c), http.StatusSeeOther)
+		wantToken(t, exchange(e.h, c))
 	}
 }
 

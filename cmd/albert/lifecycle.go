@@ -239,12 +239,14 @@ func (l *lifecycle) waitHealthy(ctx context.Context, port int, tok string) bool 
 }
 
 // open signs the browser in with a fresh one-time code and opens the UI. The
-// code is never printed.
+// code goes in the URL fragment, which the browser never sends to a server
+// or in a Referer; the page trades it at POST /api/session. The code is
+// never printed.
 func (l *lifecycle) open(st state.State, tok string) {
 	u := uiURL(st.UIPort)
 	target := u
 	if code, err := l.mintCode(st.AgentPort, tok); err == nil {
-		target = u + "/login?code=" + url.QueryEscape(code)
+		target = u + "/#code=" + url.QueryEscape(code)
 	}
 	if err := l.openURL(target); err != nil {
 		fmt.Fprintf(l.out, "Open %s in your browser.\n", u)

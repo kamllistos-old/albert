@@ -78,11 +78,10 @@ Albert keeps its files in `~/.albert` (override with `ALBERT_HOME`): `state.json
 
 - Albert only listens on localhost (`127.0.0.1`).
 - The window container holds no secret. A random access token is created each time you run `albert up` and kept in a private file (`~/.albert/token`, readable only by you).
-- `albert up` opens a one-time sign-in link in your browser. The link works once and expires after 60 seconds. It sets a cookie that is HttpOnly (page scripts can't read it) and SameSite=Strict, and the browser sends it back to Albert.
-- The agent checks every request: the token, the `Host` and `Origin` headers, `Sec-Fetch-Site`, and a custom `X-Albert-Request` header on anything that changes things. It sends no CORS headers, so other websites can't talk to it.
-- The session ends at `albert down` (or the next `albert up`); an old link or cookie then stops working. If the session ends while Albert is open, the page tells you to run `albert up` again.
-
-Known limitation: browsers don't separate cookies by port. The Albert session cookie is also sent to any other service on `localhost` that you visit in the same browser (for example, a development server on another port). It is only valid until `albert down` or the next `albert up`, so run `albert down` when you aren't using Albert.
+- `albert up` opens Albert in your browser with a one-time code in the part of the address after `#`, which browsers never send to any server. The page trades the code with the agent for the access token, then removes it from the address bar. A code works once and expires after 60 seconds.
+- The page keeps the token in the browser's local storage for Albert's own address (`http://localhost:<port>`). Browsers keep that storage separate for every port, so pages served from other ports on your Mac can't read it. Albert uses no cookies.
+- The agent checks every request: the token (sent as an `Authorization` header), the `Host` and `Origin` headers, `Sec-Fetch-Site`, and a custom `X-Albert-Request` header on anything that changes things. The only request that doesn't need the token is the one that trades a one-time code for it. The agent sends no CORS headers, so other websites can't talk to it.
+- The session ends at `albert down` (or the next `albert up` after that); an old link or stored token then stops working. If the session ends while Albert is open, the page tells you to run `albert up` again.
 
 ## Development
 

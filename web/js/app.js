@@ -382,12 +382,13 @@ function notice(text, kind = 'error') {
   n.hidden = false;
 }
 
-function endSession() {
+function endSession(message = api.SESSION_ENDED) {
   if (state.sessionEnded) return;
   state.sessionEnded = true;
   if (es) es.close();
   clearTimeout(lostTimer);
   notice('');
+  $('session-text').textContent = message;
   $('app').inert = true;
   $('session').hidden = false;
   renderHeader();
@@ -415,12 +416,11 @@ function connect() {
         syncJobs(); // catch up on anything that finished while disconnected
       }
     },
-    error(closed) {
-      if (closed) {
-        // The agent refused the stream: find out why (a 401 ends the session).
-        es.close();
-        api.getTools().then(() => setTimeout(connect, 1000), () => setTimeout(connect, 5000));
-      }
+    error() {
+      // The stream failed or ended. Ask the agent directly to find out why
+      // (a 401 ends the session), then connect again.
+      es = null;
+      api.getTools().then(() => setTimeout(connect, 1000), () => setTimeout(connect, 5000));
       if (!lostTimer) {
         lostTimer = setTimeout(() => {
           if (!state.sessionEnded) notice(`Albert isn't responding. If you stopped it, run "albert up" in Terminal to start it again.`, 'error');
@@ -535,7 +535,7 @@ document.addEventListener('keydown', (e) => {
 
 // ---- start ---------------------------------------------------------------
 
-api.onSessionEnded(endSession);
+api.onSessionEnded(() => endSession());
 
 async function start() {
   renderTable($('table'), { tools: [], providers: [] }, state.filters, startUpdate, select, {
@@ -556,4 +556,19 @@ async function start() {
   connect();
 }
 
-start();
+// boot signs in with the one-time code from "albert up", if the address has
+// one, then starts. A refused code is fine when a token from earlier is still
+// stored; without one there is nothing to try.
+async function boot() {
+  try {
+    await api.signIn();
+  } catch (err) {
+    if (!api.hasToken()) {
+      endSession(err.message);
+      return;
+    }
+  }
+  start();
+}
+
+boot();

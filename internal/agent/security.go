@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -16,8 +15,9 @@ import (
 const (
 	// maxBody is the largest request body the API accepts.
 	maxBody = 64 << 10
-	// tokenCookie carries the token for the native UI.
-	tokenCookie = "albert_token"
+	// sessionPath is the one /api route that needs no token: it is where the
+	// UI trades a one-time code for it.
+	sessionPath = "/api/session"
 	// refusedEvery is the most often a refused request is logged.
 	refusedEvery = 10 * time.Second
 	// maxLoginCodes is how many unused login codes are kept.
@@ -31,14 +31,17 @@ var loginCodeTTL = 60 * time.Second
 // DNS-rebinding attacker, from driving the agent:
 //
 //   - Host must be one of ours, so a rebound name (evil.com -> 127.0.0.1)
-//     is refused before anything else, including /login and the native UI.
+//     is refused before anything else, including the native UI.
 //   - Origin, when present, must be the UI's; browsers also send
 //     Sec-Fetch-Site, and a cross-site or same-site (other localhost port)
 //     request is refused even without Origin.
-//   - The token must match (Bearer header, or the cookie). Browsers get the
-//     cookie only by trading a one-time code from POST /api/login-code
-//     (which itself needs the token) at GET /login; nothing hands out the
-//     token to an unauthenticated caller.
+//   - The token must match, sent as "Authorization: Bearer". There are no
+//     cookies: browsers send those to every port on localhost. "albert up"
+//     mints a one-time code (POST /api/login-code, which needs the token)
+//     and opens the UI with it in the URL fragment, which never reaches a
+//     server or a Referer. The page trades it at POST /api/session, the only
+//     route without a token check, and keeps the token in localStorage,
+//     which only the UI's own origin (scheme, host and port) can read.
 //   - State-changing requests need X-Albert-Request: 1. Pages on other
 //     origins cannot set it without a CORS preflight, and the agent never
 //     answers one: it sends no CORS headers at all.
@@ -61,7 +64,7 @@ func (s *server) guardHost(next http.Handler) http.Handler {
 }
 
 // guardAPI applies the origin, token, header and size checks, in that order,
-// to /api requests.
+// to /api requests. Only POST /api/session (exactly) skips the token check.
 func (s *server) guardAPI(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.sameOrigin(r) {
@@ -69,7 +72,8 @@ func (s *server) guardAPI(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "Albert only accepts requests from its own window.")
 			return
 		}
-		if !s.validToken(r) {
+		exempt := r.Method == http.MethodPost && r.URL.Path == sessionPath
+		if !exempt && !s.validToken(r) {
 			s.refused.logf("refused %s %s: missing or wrong token", r.Method, r.URL.Path)
 			writeError(w, http.StatusUnauthorized, "Albert couldn't confirm this request came from you. Restart Albert with \"albert up\" and try again.")
 			return
@@ -106,28 +110,22 @@ func (s *server) sameOrigin(r *http.Request) bool {
 	return false
 }
 
-// validToken checks the Bearer token, or, when there is no Authorization
-// header, the token cookie. It compares in constant time, and an empty
-// configured token matches nothing.
+// validToken checks the Bearer token in constant time. Cookies are ignored,
+// and an empty configured token matches nothing.
 func (s *server) validToken(r *http.Request) bool {
 	if s.cfg.Token == "" {
 		return false
 	}
-	var got string
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		scheme, tok, ok := strings.Cut(auth, " ")
-		if !ok || !strings.EqualFold(scheme, "Bearer") {
-			return false
-		}
-		got = strings.TrimSpace(tok)
-	} else if c, err := r.Cookie(tokenCookie); err == nil {
-		got = c.Value
+	scheme, tok, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") {
+		return false
 	}
+	got := strings.TrimSpace(tok)
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.Token)) == 1
 }
 
-// uiHandler serves the native UI, GET and HEAD only. It never sets the token
-// cookie: browsers get that only through /login.
+// uiHandler serves the native UI, GET and HEAD only. It never hands out the
+// token: the page gets that only through POST /api/session.
 func (s *server) uiHandler(files http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -139,9 +137,9 @@ func (s *server) uiHandler(files http.Handler) http.Handler {
 	})
 }
 
-// loginCode mints a one-time code for /login. Callers must already hold the
-// token, so only "albert up" (or another token holder) can open a browser
-// session.
+// loginCode mints a one-time code for POST /api/session. Callers must
+// already hold the token, so only "albert up" (or another token holder) can
+// open a browser session.
 func (s *server) loginCode(w http.ResponseWriter, r *http.Request) {
 	code, err := s.codes.mint()
 	if err != nil {
@@ -152,36 +150,27 @@ func (s *server) loginCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"code": code})
 }
 
-// expiredPage is shown for any login code that is missing, wrong, used or
+// expiredLink is the error for any code that is missing, wrong, used or
 // expired.
-const expiredPage = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Albert</title></head>
-<body><p>This Albert link has expired. Run &quot;albert up&quot; again to open Albert.</p></body></html>
-`
+const expiredLink = `This Albert link has expired. Run "albert up" again to open Albert.`
 
-// login trades a one-time code for the token cookie (HttpOnly,
-// SameSite=Strict) and sends the browser to the UI. It sits behind the Host
-// check only: the browser has no token yet.
-func (s *server) login(w http.ResponseWriter, r *http.Request) {
-	h := w.Header()
-	h.Set("Cache-Control", "no-store")
-	h.Set("Referrer-Policy", "no-referrer")
-	// HEAD (link previews, prefetchers) must not use up the code.
-	if r.Method != http.MethodGet || !s.codes.redeem(r.URL.Query().Get("code")) {
-		s.refused.logf("refused login: missing, wrong, used or expired code")
-		h.Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, expiredPage)
+// session trades a one-time code for the token. It is the only /api route
+// without a token check (the page has none yet); the origin and
+// X-Albert-Request checks still apply, so another site cannot call it.
+func (s *server) session(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var req struct {
+		Code string `json:"code"`
+	}
+	if !readJSON(w, r, &req) {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     tokenCookie,
-		Value:    s.cfg.Token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	if !s.codes.redeem(req.Code) {
+		s.refused.logf("refused session: missing, wrong, used or expired code")
+		writeError(w, http.StatusForbidden, expiredLink)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"token": s.cfg.Token})
 }
 
 // loginCodes holds the outstanding one-time login codes, oldest first.

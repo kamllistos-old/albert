@@ -1,6 +1,7 @@
-# The container holds no secret. Browsers authenticate to the agent with a
-# cookie obtained through /login; Caddy only proxies, unchanged. Caddy keeps
-# Host, Origin and Cookie as they arrived, and the agent does all the checks.
+# The container holds no secret. The page trades a one-time code for the
+# agent's token at POST /api/session and sends it as a Bearer header; Caddy
+# only proxies /api, unchanged. Caddy keeps Host, Origin and Authorization as
+# they arrived, and the agent does all the checks.
 :80 {
 	header {
 		X-Content-Type-Options nosniff
@@ -12,10 +13,6 @@
 		reverse_proxy {$ALBERT_AGENT} {
 			flush_interval -1
 		}
-	}
-
-	handle /login {
-		reverse_proxy {$ALBERT_AGENT}
 	}
 
 	handle {

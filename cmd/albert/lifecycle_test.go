@@ -218,7 +218,7 @@ func TestUpDockerMode(t *testing.T) {
 		t.Fatalf("login code minted with %v, want %v", h.w.codeCalls, want)
 	}
 	ui := "http://localhost:" + strconv.Itoa(uiPort)
-	if want := []string{ui + "/login?code=code1"}; !slices.Equal(h.w.opened, want) {
+	if want := []string{ui + "/#code=code1"}; !slices.Equal(h.w.opened, want) {
 		t.Fatalf("opened %v, want %v", h.w.opened, want)
 	}
 	out := h.out.String()
@@ -272,7 +272,7 @@ func TestUpNativeFlag(t *testing.T) {
 	if st.Mode != "native" || st.UIPort != st.AgentPort {
 		t.Fatalf("state %+v", st)
 	}
-	if want := "http://localhost:" + strconv.Itoa(st.UIPort) + "/login?code=code1"; !slices.Equal(h.w.opened, []string{want}) {
+	if want := "http://localhost:" + strconv.Itoa(st.UIPort) + "/#code=code1"; !slices.Equal(h.w.opened, []string{want}) {
 		t.Fatalf("opened %v, want %v", h.w.opened, want)
 	}
 }
@@ -344,7 +344,7 @@ func TestUpAlreadyRunning(t *testing.T) {
 	if want := []string{"7900 " + tok}; !slices.Equal(h.w.codeCalls, want) {
 		t.Fatalf("minted %v, want %v", h.w.codeCalls, want)
 	}
-	if want := []string{"http://localhost:7901/login?code=code1"}; !slices.Equal(h.w.opened, want) {
+	if want := []string{"http://localhost:7901/#code=code1"}; !slices.Equal(h.w.opened, want) {
 		t.Fatalf("opened %v, want %v", h.w.opened, want)
 	}
 }
