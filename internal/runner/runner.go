@@ -8,11 +8,13 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
-// waitDelay bounds how long we wait for a killed command's pipes to close, so
-// a timeout is not held up by grandchildren that inherited stdout/stderr.
+// waitDelay is how long a cancelled command gets to exit after SIGTERM before
+// it is killed, and how long we then wait for its pipes to close, so a
+// timeout is not held up by grandchildren that inherited stdout/stderr.
 const waitDelay = 2 * time.Second
 
 // Result is the outcome of a finished command.
@@ -38,6 +40,10 @@ type Exec struct{ Stdin io.Reader }
 
 func (e Exec) command(ctx context.Context, name string, args []string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// On cancel (timeout, "albert down"), ask politely first: a package
+	// manager stopped with SIGTERM can remove its lock files and roll back.
+	// One that ignores it is killed after WaitDelay.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = waitDelay
 	cmd.Stdin = e.Stdin
 	return cmd

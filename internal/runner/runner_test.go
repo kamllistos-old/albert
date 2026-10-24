@@ -35,6 +35,61 @@ func TestExecTimeout(t *testing.T) {
 	}
 }
 
+// lockedBuffer is a bytes.Buffer safe to read while a command writes to it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestExecCancelSendsSIGTERM(t *testing.T) {
+	// A cancelled package manager gets SIGTERM, so it can clean up (remove
+	// lock files, roll back) instead of being killed mid-install.
+	ctx, cancel := context.WithCancel(context.Background())
+	var out lockedBuffer
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Exec{}.Stream(ctx, &out, "sh", "-c", `trap 'echo cleaned up; kill $! 2>/dev/null; exit 3' TERM; echo ready; sleep 30 & wait`)
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out.String(), "ready") {
+		if time.Now().After(deadline) {
+			t.Fatal("command never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if !strings.Contains(out.String(), "cleaned up") {
+		t.Fatalf("output %q: the command was not given SIGTERM to clean up", out.String())
+	}
+}
+
+func TestExecCancelStillStopsCommandIgnoringSIGTERM(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Exec{}.Run(ctx, "sh", "-c", `trap '' TERM; while :; do sleep 0.1; done`)
+	if err == nil {
+		t.Fatal("err = nil, want the context error")
+	}
+	if elapsed := time.Since(start); elapsed > waitDelay+3*time.Second {
+		t.Errorf("took %v: a command ignoring SIGTERM must still be killed", elapsed)
+	}
+}
+
 func TestExecStartFailure(t *testing.T) {
 	_, err := Exec{}.Run(context.Background(), "albert-no-such-binary")
 	if err == nil {
