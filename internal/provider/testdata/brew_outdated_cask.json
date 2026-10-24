@@ -1,0 +1,14 @@
+{
+  "formulae": [],
+  "casks": [
+    {
+      "name": "claude-code",
+      "installed_versions": [
+        "2.1.274"
+      ],
+      "current_version": "2.1.304",
+      "pinned": false,
+      "pinned_version": null
+    }
+  ]
+}

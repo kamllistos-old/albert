@@ -1,0 +1,17 @@
+{
+  "name": "lib",
+  "dependencies": {
+    "azure-functions-core-tools": {
+      "version": "4.12.1",
+      "overridden": false
+    },
+    "npm": {
+      "version": "11.19.0",
+      "overridden": false
+    },
+    "typescript": {
+      "version": "7.0.2",
+      "overridden": false
+    }
+  }
+}

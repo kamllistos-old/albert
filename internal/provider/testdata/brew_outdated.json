@@ -1,0 +1,14 @@
+{
+  "formulae": [
+    {
+      "name": "ada-url",
+      "installed_versions": [
+        "4.0.0"
+      ],
+      "current_version": "4.0.0_1",
+      "pinned": false,
+      "pinned_version": null
+    }
+  ],
+  "casks": []
+}

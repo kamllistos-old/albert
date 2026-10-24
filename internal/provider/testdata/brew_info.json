@@ -1,0 +1,52 @@
+{
+  "formulae": [
+    {
+      "name": "argocd",
+      "full_name": "argocd",
+      "desc": "GitOps Continuous Delivery for Kubernetes",
+      "homepage": "https://argoproj.github.io/cd/",
+      "versions": {
+        "stable": "3.5.6",
+        "head": null,
+        "bottle": true
+      },
+      "installed": [
+        {
+          "version": "3.5.6",
+          "installed_on_request": true
+        }
+      ],
+      "outdated": false
+    },
+    {
+      "name": "ada-url",
+      "full_name": "ada-url",
+      "desc": "WHATWG-compliant and fast URL parser written in modern C++",
+      "homepage": "https://ada-url.com",
+      "versions": {
+        "stable": "4.0.0",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "installed": [
+        {
+          "version": "4.0.0",
+          "installed_on_request": false
+        }
+      ],
+      "outdated": true
+    }
+  ],
+  "casks": [
+    {
+      "token": "claude-code",
+      "full_token": "claude-code",
+      "desc": "Terminal-based AI coding assistant",
+      "homepage": "https://claude.com/product/claude-code",
+      "version": "2.1.304",
+      "installed": "2.1.274",
+      "outdated": true,
+      "auto_updates": null
+    }
+  ]
+}
