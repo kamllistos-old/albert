@@ -1,5 +1,6 @@
 // Package jobs runs tool updates and installs in the background, one at a
-// time per source, and streams their output to subscribers.
+// time per source (brew and cask share one queue), and streams their output
+// to subscribers.
 package jobs
 
 import (
@@ -69,13 +70,13 @@ type Manager struct {
 	closed  bool
 	jobs    map[string]*Job
 	order   []string // oldest first
-	queues  map[string]*queue
+	queues  map[string]*queue // by queueKey(source)
 	subs    map[int]chan Event
 	nextSub int
 }
 
-// queue is one source's FIFO of waiting jobs. running is true while its
-// worker goroutine exists.
+// queue is one FIFO of waiting jobs. running is true while its worker
+// goroutine exists.
 type queue struct {
 	pending []*Job
 	running bool
@@ -153,16 +154,17 @@ func (m *Manager) Submit(source, kind string, names []string) (string, error) {
 	m.order = append(m.order, id)
 	m.pruneLocked()
 
-	q := m.queues[source]
+	key := queueKey(source)
+	q := m.queues[key]
 	if q == nil {
 		q = &queue{}
-		m.queues[source] = q
+		m.queues[key] = q
 	}
 	q.pending = append(q.pending, j)
 	if !q.running {
 		q.running = true
 		m.wg.Add(1)
-		go m.work(source, q)
+		go m.work(q)
 	}
 	return id, nil
 }
@@ -216,8 +218,17 @@ func (m *Manager) Subscribe() (<-chan Event, func()) {
 	}
 }
 
-// work runs one source's queued jobs, oldest first, until none are left.
-func (m *Manager) work(source string, q *queue) {
+// queueKey is the queue a source's jobs wait in. Formulae and casks both run
+// Homebrew, which refuses to run twice at once, so they share one queue.
+func queueKey(source string) string {
+	if source == "cask" {
+		return "brew"
+	}
+	return source
+}
+
+// work runs one queue's jobs, oldest first, until none are left.
+func (m *Manager) work(q *queue) {
 	defer m.wg.Done()
 	for {
 		m.mu.Lock()
@@ -297,7 +308,7 @@ func (m *Manager) failMessage(j *Job, kind string, targets []string, err error) 
 	case errors.Is(err, provider.ErrReadOnly), errors.Is(err, provider.ErrUnsupported):
 		return err.Error()
 	case needsPassword(m.output(j)):
-		return passwordMessage(kind, targets)
+		return passwordMessage(j.Source, kind, targets)
 	case m.ctx.Err() != nil:
 		return "Albert stopped before this finished."
 	}
@@ -311,13 +322,18 @@ func needsPassword(out string) bool {
 }
 
 // passwordMessage tells the user to finish the job in Terminal: "albert
-// install" for installs, "albert update" for updates.
-func passwordMessage(kind string, targets []string) string {
+// install" for installs, "albert update" for updates. An update-all job
+// names its source, since that is all the job updated; pip also needs
+// --include-pip, without which "update --all" skips it.
+func passwordMessage(source, kind string, targets []string) string {
 	verb := "update"
 	if kind == KindInstall {
 		verb = "install"
 	}
-	tool := "--all"
+	tool := "--all --source " + source
+	if source == "pip" {
+		tool += " --include-pip"
+	}
 	if len(targets) > 0 {
 		tool = targets[0]
 	}

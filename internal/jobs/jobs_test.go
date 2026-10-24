@@ -238,6 +238,46 @@ func TestSameSourceSerialized(t *testing.T) {
 	waitDone(t, m, id3)
 }
 
+func TestBrewAndCaskShareOneQueue(t *testing.T) {
+	// Both run Homebrew, which refuses a second concurrent process.
+	release := make(chan struct{})
+	started := make(chan string, 2)
+	mk := func(name string) *fakeProvider {
+		return &fakeProvider{name: name, upgrade: func(ctx context.Context, _ []string, _ io.Writer) error {
+			started <- name
+			select {
+			case <-release:
+			case <-ctx.Done(): // so a failing test still shuts down
+			}
+			return nil
+		}}
+	}
+	m := newManager(t, mk("brew"), mk("cask"))
+	id1, _ := m.Submit("brew", "update", nil)
+	if got := <-started; got != "brew" {
+		t.Fatalf("first started %q", got)
+	}
+	id2, _ := m.Submit("cask", "update", nil)
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case n := <-started:
+		t.Fatalf("%q started while the brew job was running", n)
+	default:
+	}
+	if s := status(m, id2); s != StatusQueued {
+		t.Errorf("cask job is %q, want queued", s)
+	}
+	release <- struct{}{}
+	waitDone(t, m, id1)
+	if got := <-started; got != "cask" {
+		t.Errorf("second started %q, want cask", got)
+	}
+	release <- struct{}{}
+	if j := waitDone(t, m, id2); j.Source != "cask" {
+		t.Errorf("job source = %q, want cask", j.Source)
+	}
+}
+
 func TestDifferentSourcesParallel(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan string, 2)
@@ -272,7 +312,7 @@ func TestSudoMessage(t *testing.T) {
 		for _, tc := range []struct {
 			names  []string
 			target string
-		}{{[]string{"firefox", "other"}, "firefox"}, {nil, "--all"}} {
+		}{{[]string{"firefox", "other"}, "firefox"}, {nil, "--all --source cask"}} {
 			p := &fakeProvider{name: "cask"}
 			p.upgrade = func(_ context.Context, _ []string, w io.Writer) error {
 				io.WriteString(w, out)
@@ -285,6 +325,21 @@ func TestSudoMessage(t *testing.T) {
 				t.Errorf("output %q targets %v: got %q %q", out, tc.names, j.Status, j.Message)
 			}
 		}
+	}
+}
+
+func TestSudoMessageUpdateAllPip(t *testing.T) {
+	// "albert update --all" skips pip unless --include-pip is given.
+	p := &fakeProvider{name: "pip"}
+	p.upgrade = func(_ context.Context, _ []string, w io.Writer) error {
+		io.WriteString(w, "sudo: a password is required\n")
+		return errors.New("exit status 1")
+	}
+	m := newManager(t, p)
+	id, _ := m.Submit("pip", "update", nil)
+	const want = `This needs your password. Run "albert update --all --source pip --include-pip" in Terminal.`
+	if j := waitDone(t, m, id); j.Message != want {
+		t.Errorf("message = %q, want %q", j.Message, want)
 	}
 }
 
