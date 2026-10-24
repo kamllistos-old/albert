@@ -113,13 +113,15 @@ A job that fails because it needs `sudo` (detected from output, e.g. some cask u
 
 ### 3.6 Agent API (`internal/agent`)
 
-Binds `127.0.0.1` only. A random token is generated on every `albert up`, passed to the container, and required on every request (`Authorization: Bearer`). Requests without a valid token get 401. Caddy injects the header so the browser never handles it; in native mode the UI is served same-origin and the token is set as an HttpOnly, `SameSite=Strict` cookie.
+Binds `127.0.0.1` only. A random token is generated on every `albert up` and required on every request (`Authorization: Bearer`). Requests without a valid token get 401. The GUI container holds no secret and Caddy only proxies.
 
-Because the token is injected server-side, the token alone does not stop a malicious web page from sending requests to `localhost:7879`. The agent (and Caddy) therefore also enforce, on every `/api` request:
+*Revised during implementation (rulings R17, R20):* the original design had Caddy inject the token, which let any other container or macOS user reach the agent through Caddy; a cookie-based replacement leaked across localhost ports. Final flow: `albert up` mints a one-time code (`POST /api/login-code`, Bearer, 60s, single use) and opens `http://localhost:<ui>/#code=<code>`. The page exchanges it via `POST /api/session` (the only route exempt from the token check) for the token, keeps it in `localStorage` (scoped to the UI origin including port), strips the fragment, and sends it as Bearer on every call; SSE is read with fetch streaming. No cookies are used.
+
+The agent also enforces, on every `/api` request:
 
 - `Host` must be `localhost:<ui port>` or `127.0.0.1:<ui port>` (blocks DNS rebinding).
-- If an `Origin` header is present it must match the UI origin.
-- State-changing requests (`POST`) must carry `X-Albert-Request: 1`; cross-origin pages cannot set custom headers without a CORS preflight, and no CORS headers are ever sent.
+- If an `Origin` header is present it must match the UI origin; `Sec-Fetch-Site: cross-site`/`same-site` is refused.
+- Every non-GET/HEAD request must carry `X-Albert-Request: 1`; cross-origin pages cannot set custom headers without a CORS preflight, and no CORS headers are ever sent.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -135,7 +137,7 @@ The outdated check repeats every 6h while the agent runs.
 
 ### 3.7 Docker control (`internal/dock`)
 
-Uses the `docker` CLI (no SDK dependency). `up`: ensure image exists (pull `ghcr.io/kamllistos/albert-ui:<version>`, else build locally from the Dockerfile embedded in the binary), then `docker run -d --rm --name albert-ui -p 127.0.0.1:7879:80 -e ALBERT_AGENT=host.docker.internal:<port> -e ALBERT_TOKEN=<token>`. `down`: `docker stop albert-ui`.
+Uses the `docker` CLI (no SDK dependency). `up`: ensure image exists (pull `ghcr.io/kamllistos/albert-ui:<version>`, else build locally from the Dockerfile embedded in the binary), then `docker run -d --rm --name albert-ui -p 127.0.0.1:7879:80 -e ALBERT_AGENT=host.docker.internal:<port>` (no token in the container). After start, `up` checks the window answers through Caddy and falls back to native mode if it doesn't. `down`: `docker stop albert-ui`.
 
 ### 3.8 CLI (`cmd/albert`)
 
