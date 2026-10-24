@@ -23,6 +23,7 @@ type fakeProvider struct {
 	updates   []provider.Update
 	results   []provider.Result
 	listErr   error
+	outErr    error
 	upgradeEr error
 
 	mu        sync.Mutex
@@ -38,7 +39,9 @@ func (f *fakeProvider) List(context.Context) ([]provider.Tool, error) {
 	}
 	return append([]provider.Tool(nil), f.tools...), nil
 }
-func (f *fakeProvider) Outdated(context.Context) ([]provider.Update, error) { return f.updates, nil }
+func (f *fakeProvider) Outdated(context.Context) ([]provider.Update, error) {
+	return f.updates, f.outErr
+}
 func (f *fakeProvider) Upgrade(_ context.Context, names []string, out io.Writer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -203,6 +206,24 @@ func TestListUnknownSource(t *testing.T) {
 	}
 	if !strings.Contains(h.errOut.String(), `"nope"`) {
 		t.Errorf("stderr %q", h.errOut)
+	}
+}
+
+func TestOutdatedRegistryOutageIsNotUpToDate(t *testing.T) {
+	h := newApp("", false, &fakeProvider{
+		name:   "npm",
+		tools:  []provider.Tool{{Name: "eslint", Version: "9.0"}},
+		outErr: &provider.LookupError{Source: "npm", Failed: []string{"eslint"}, Total: 1},
+	})
+	if code := h.run("outdated"); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	out := h.out.String()
+	if strings.Contains(out, "Everything is up to date.") {
+		t.Errorf("an unchecked source was reported up to date: %q", out)
+	}
+	if !strings.Contains(out, "! npm: couldn't reach the package registry to check for updates") {
+		t.Errorf("stdout %q", out)
 	}
 }
 

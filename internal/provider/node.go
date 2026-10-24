@@ -147,21 +147,20 @@ func (p *nodeProvider) Outdated(ctx context.Context) ([]Update, error) {
 	if p.reg == nil {
 		return nil, errors.New(p.name + ": no registry client")
 	}
-	return LookupAll(ctx, tools, lookupLimit, func(ctx context.Context, t Tool) (Update, bool) {
+	return LookupAll(ctx, p.name, tools, lookupLimit, toolName, func(ctx context.Context, t Tool) (Update, bool, error) {
 		pkg, err := p.reg.NPM(ctx, t.Name)
-		if err != nil || pkg.Version == "" || pkg.Version == t.Version {
-			return Update{}, false
-		}
-		return Update{Name: t.Name, Latest: pkg.Version, Description: pkg.Description, Homepage: pkg.Homepage}, true
-	}), nil
+		return pkgUpdate(t, pkg, err)
+	})
 }
 
 func (p *nodeProvider) Upgrade(ctx context.Context, names []string, out io.Writer) error {
 	if err := checkNames(p.name, names); err != nil {
 		return err
 	}
+	var lookupErr error
 	if len(names) == 0 {
 		ups, err := p.Outdated(ctx)
+		lookupErr, err = lookupFailure(err)
 		if err != nil {
 			return err
 		}
@@ -169,14 +168,14 @@ func (p *nodeProvider) Upgrade(ctx context.Context, names []string, out io.Write
 			names = append(names, u.Name)
 		}
 		if len(names) == 0 {
-			return nil
+			return lookupErr
 		}
 	}
 	args := []string{p.addAs, "-g"}
 	for _, n := range names {
 		args = append(args, n+"@latest")
 	}
-	return runStream(ctx, p.r, out, p.name, args...)
+	return errors.Join(runStream(ctx, p.r, out, p.name, args...), lookupErr)
 }
 
 func (p *nodeProvider) Install(ctx context.Context, name string, out io.Writer) error {

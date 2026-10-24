@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -148,6 +149,49 @@ func TestNPMOutdatedFillsDescription(t *testing.T) {
 func TestNPMOutdatedNeedsRegistry(t *testing.T) {
 	if _, err := NewNPM(npmFake(t), nil).Outdated(context.Background()); err == nil {
 		t.Fatal("want error without a registry client")
+	}
+}
+
+func TestNPMOutdatedRegistryOutageIsAnError(t *testing.T) {
+	ups, err := NewNPM(npmFake(t), outageRegistry(t)).Outdated(context.Background())
+	requireAllFailed(t, ups, err)
+}
+
+func TestNPMUpgradeAllRegistryOutageFailsWithoutInstalling(t *testing.T) {
+	f := npmFake(t)
+	err := NewNPM(f, outageRegistry(t)).Upgrade(context.Background(), nil, &strings.Builder{})
+	var le *LookupError
+	if !errors.As(err, &le) {
+		t.Fatalf("err = %v, want the lookup failure reported", err)
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "npm install") {
+			t.Errorf("unexpected %q", c)
+		}
+	}
+}
+
+func TestNPMUpgradeAllPartialFailureUpgradesFoundThenReports(t *testing.T) {
+	// azure-functions-core-tools has an update; typescript's lookup fails.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "typescript"):
+			http.Error(w, "down", http.StatusServiceUnavailable)
+		case strings.Contains(r.URL.Path, "azure-functions-core-tools"):
+			w.Write([]byte(`{"name":"azure-functions-core-tools","version":"4.13.0"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	f := npmFake(t)
+	err := NewNPM(f, &registry.Client{HTTP: srv.Client(), NPMURL: srv.URL}).Upgrade(context.Background(), nil, &strings.Builder{})
+	if got := f.Calls[len(f.Calls)-1]; got != "npm install -g azure-functions-core-tools@latest" {
+		t.Errorf("last call = %q, want the found update installed", got)
+	}
+	var le *LookupError
+	if !errors.As(err, &le) || strings.Join(le.Failed, ",") != "typescript" {
+		t.Errorf("err = %v, want the typescript lookup failure reported", err)
 	}
 }
 

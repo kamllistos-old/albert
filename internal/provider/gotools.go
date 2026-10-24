@@ -136,16 +136,23 @@ func (p *goProvider) outdated(ctx context.Context, bins []goBin) ([]Update, erro
 	if p.reg == nil {
 		return nil, errors.New("go: no registry client")
 	}
-	return LookupAll(ctx, bins, lookupLimit, func(ctx context.Context, b goBin) (Update, bool) {
+	name := func(b goBin) string { return b.tool.Name }
+	return LookupAll(ctx, "go", bins, lookupLimit, name, func(ctx context.Context, b goBin) (Update, bool, error) {
 		if b.module == "" || b.tool.Version == "" || b.tool.Version == "(devel)" {
-			return Update{}, false
+			return Update{}, false, nil
 		}
 		latest, err := p.reg.GoLatest(ctx, b.module)
-		if err != nil || latest == "" || latest == b.tool.Version {
-			return Update{}, false
+		if errors.Is(err, registry.ErrNotFound) {
+			return Update{}, false, nil
 		}
-		return Update{Name: b.tool.Name, Latest: latest}, true
-	}), nil
+		if err != nil {
+			return Update{}, false, err
+		}
+		if latest == "" || latest == b.tool.Version {
+			return Update{}, false, nil
+		}
+		return Update{Name: b.tool.Name, Latest: latest}, true, nil
+	})
 }
 
 func goInstallArgs(target string) []string { return []string{"install", target + "@latest"} }
@@ -158,8 +165,10 @@ func (p *goProvider) Upgrade(ctx context.Context, names []string, out io.Writer)
 	if err != nil {
 		return err
 	}
+	var lookupErr error
 	if len(names) == 0 {
 		ups, err := p.outdated(ctx, bins)
+		lookupErr, err = lookupFailure(err)
 		if err != nil {
 			return err
 		}
@@ -184,7 +193,7 @@ func (p *goProvider) Upgrade(ctx context.Context, names []string, out io.Writer)
 	if err := checkNames("go", targets); err != nil {
 		return err
 	}
-	return streamEach(ctx, p.r, out, "go", targets, goInstallArgs)
+	return errors.Join(streamEach(ctx, p.r, out, "go", targets, goInstallArgs), lookupErr)
 }
 
 func (p *goProvider) Install(ctx context.Context, name string, out io.Writer) error {

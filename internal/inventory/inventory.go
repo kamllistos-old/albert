@@ -327,9 +327,29 @@ func (i *Inventory) checkOutdated(ctx context.Context, s *source, timeout time.D
 	changed := false
 	if ctx.Err() == nil && seq > s.outApplied {
 		s.outApplied = seq
-		if err != nil {
+		var lookupErr *provider.LookupError
+		switch {
+		case errors.As(err, &lookupErr):
+			// Some registry lookups failed. Take the fresh answers, but keep
+			// what we knew for the tools that couldn't be checked: an outage
+			// must never turn "update available" into "up to date". The
+			// status error makes the UI say "Couldn't check" instead of
+			// "Up to date" for tools with no known update.
 			s.outErr = err.Error()
-		} else {
+			merged := make(map[string]provider.Update, len(ups)+len(lookupErr.Failed))
+			for _, n := range lookupErr.Failed {
+				if u, ok := s.latest[n]; ok {
+					merged[n] = u
+				}
+			}
+			for _, u := range ups {
+				merged[u.Name] = u
+			}
+			s.latest = merged
+			changed = true
+		case err != nil:
+			s.outErr = err.Error()
+		default:
 			s.outErr = ""
 			s.latest = make(map[string]provider.Update, len(ups))
 			for _, u := range ups {

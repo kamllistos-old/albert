@@ -108,16 +108,43 @@ func cmdErr(name string, res runner.Result) error {
 	return fmt.Errorf("%s: exit code %d", name, res.ExitCode)
 }
 
+// LookupError reports registry lookups that failed during Outdated: network
+// trouble or a registry outage. A package the registry does not have
+// (registry.ErrNotFound) is not a failure; it simply has no update. Outdated
+// returns a LookupError together with the updates it did find. Failed names
+// the tools whose newest version is unknown, so callers can keep what they
+// knew about those tools before instead of calling them up to date.
+type LookupError struct {
+	Source string
+	Failed []string // tool names, in input order
+	Total  int      // tools that needed a lookup, failed ones included
+}
+
+// All reports whether no lookup succeeded.
+func (e *LookupError) All() bool { return len(e.Failed) >= e.Total }
+
+func (e *LookupError) Error() string {
+	if e.All() {
+		return e.Source + ": couldn't reach the package registry to check for updates"
+	}
+	return fmt.Sprintf("%s: couldn't reach the package registry to check %d of %d tools for updates", e.Source, len(e.Failed), e.Total)
+}
+
 // LookupAll runs fn for every item, at most limit at a time, and returns the
-// updates fn reported, in input order. It stops starting new lookups once ctx
-// is done.
-func LookupAll[T any](ctx context.Context, items []T, limit int, fn func(context.Context, T) (Update, bool)) []Update {
+// updates fn reported, in input order. fn returns ok=false for an item with
+// no update (up to date, not on the registry, or not checkable) and an error
+// when the lookup itself failed. It stops starting new lookups once ctx is
+// done. If any lookup failed or never ran, the error is a *LookupError naming
+// those items (by name(item)), returned together with the updates found.
+func LookupAll[T any](ctx context.Context, source string, items []T, limit int, name func(T) string, fn func(context.Context, T) (Update, bool, error)) ([]Update, error) {
 	if limit < 1 {
 		limit = 1
 	}
 	type slot struct {
-		u  Update
-		ok bool
+		u       Update
+		ok      bool
+		err     error
+		started bool
 	}
 	slots := make([]slot, len(items))
 	sem := make(chan struct{}, limit)
@@ -132,21 +159,29 @@ loop:
 			break loop
 		case sem <- struct{}{}:
 		}
+		slots[i].started = true
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			slots[i].u, slots[i].ok = fn(ctx, it)
+			slots[i].u, slots[i].ok, slots[i].err = fn(ctx, it)
 		}()
 	}
 	wg.Wait()
 	out := make([]Update, 0, len(items))
-	for _, s := range slots {
-		if s.ok {
+	var failed []string
+	for i, s := range slots {
+		switch {
+		case !s.started || s.err != nil:
+			failed = append(failed, name(items[i]))
+		case s.ok:
 			out = append(out, s.u)
 		}
 	}
-	return out
+	if len(failed) > 0 {
+		return out, &LookupError{Source: source, Failed: failed, Total: len(items)}
+	}
+	return out, nil
 }
 
 // SearchAll searches every available provider in parallel, each bounded by

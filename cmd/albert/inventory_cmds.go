@@ -108,6 +108,17 @@ func printProviderErrors(w io.Writer, snap inventory.Snapshot, source string) {
 	}
 }
 
+// nothingOutdated is the line printed when no updates were found. It only
+// claims everything is up to date when every source could be checked.
+func nothingOutdated(snap inventory.Snapshot, source string) string {
+	for _, p := range snap.Providers {
+		if p.Error != "" && (source == "" || p.Name == source) {
+			return "No updates found, but Albert couldn't check everything:"
+		}
+	}
+	return "Everything is up to date."
+}
+
 // reason drops a leading "<name>: " that providers add to their errors, since
 // callers print the name themselves.
 func reason(name, msg string) string {
@@ -169,7 +180,7 @@ func cmdOutdated(a *app, args []string) int {
 	snap := a.scan(*source, true)
 	tools := view(snap, *source, false, true)
 	if len(tools) == 0 {
-		fmt.Fprintln(a.stdout, "Everything is up to date.")
+		fmt.Fprintln(a.stdout, nothingOutdated(snap, *source))
 	} else {
 		printTools(a.stdout, tools)
 	}
@@ -233,7 +244,7 @@ func (a *app) updateAll(source string, includePip bool) int {
 		}
 	}
 	if len(sources) == 0 {
-		fmt.Fprintln(a.stdout, "Everything is up to date.")
+		fmt.Fprintln(a.stdout, nothingOutdated(snap, source))
 		printProviderErrors(a.stdout, snap, source)
 		return exitOK
 	}

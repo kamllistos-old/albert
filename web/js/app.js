@@ -137,7 +137,11 @@ function renderSummary() {
   const scanning = state.snapshot.providers.some(isScanning);
   const parts = [`${tools.length} ${tools.length === 1 ? 'tool' : 'tools'}`];
   if (updates) parts.push(`${updates} with ${updates === 1 ? 'an update' : 'updates'} available`);
-  else if (tools.length && !state.snapshot.checkingUpdates) parts.push('everything up to date');
+  else if (tools.length && !state.snapshot.checkingUpdates) {
+    // Only claim "up to date" when every source could be checked.
+    const unchecked = state.snapshot.providers.some((p) => p.available && p.error);
+    parts.push(unchecked ? "no updates found (some sources couldn't be checked)" : 'everything up to date');
+  }
   if (scanning) parts.push('still looking…');
   $('summary').textContent = parts.join(' · ');
 }

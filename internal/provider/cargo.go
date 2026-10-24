@@ -86,13 +86,10 @@ func (p *cargoProvider) Outdated(ctx context.Context) ([]Update, error) {
 			tools = append(tools, c.tool)
 		}
 	}
-	return LookupAll(ctx, tools, lookupLimit, func(ctx context.Context, t Tool) (Update, bool) {
+	return LookupAll(ctx, "cargo", tools, lookupLimit, toolName, func(ctx context.Context, t Tool) (Update, bool, error) {
 		pkg, err := p.reg.Crate(ctx, t.Name)
-		if err != nil || pkg.Version == "" || pkg.Version == t.Version {
-			return Update{}, false
-		}
-		return Update{Name: t.Name, Latest: pkg.Version, Description: pkg.Description, Homepage: pkg.Homepage}, true
-	}), nil
+		return pkgUpdate(t, pkg, err)
+	})
 }
 
 func cargoInstallArgs(name string) []string { return []string{"install", name} }
@@ -101,6 +98,7 @@ func (p *cargoProvider) Upgrade(ctx context.Context, names []string, out io.Writ
 	if err := checkNames("cargo", names); err != nil {
 		return err
 	}
+	var lookupErr error
 	if len(names) > 0 {
 		cs, err := p.crates(ctx)
 		if err != nil {
@@ -113,6 +111,7 @@ func (p *cargoProvider) Upgrade(ctx context.Context, names []string, out io.Writ
 		}
 	} else {
 		ups, err := p.Outdated(ctx)
+		lookupErr, err = lookupFailure(err)
 		if err != nil {
 			return err
 		}
@@ -123,7 +122,7 @@ func (p *cargoProvider) Upgrade(ctx context.Context, names []string, out io.Writ
 			return err
 		}
 	}
-	return streamEach(ctx, p.r, out, "cargo", names, cargoInstallArgs)
+	return errors.Join(streamEach(ctx, p.r, out, "cargo", names, cargoInstallArgs), lookupErr)
 }
 
 func (p *cargoProvider) Install(ctx context.Context, name string, out io.Writer) error {

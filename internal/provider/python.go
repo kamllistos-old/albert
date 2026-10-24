@@ -20,18 +20,16 @@ const pipManagedMsg = "pip refused: this Python is managed by Homebrew. Use uv o
 var uvLine = regexp.MustCompile(`^(\S+) v(\S+) \((.+)\)$`)
 
 // pypiOutdated looks every tool up on PyPI and reports those whose latest
-// release differs from the installed version.
-func pypiOutdated(ctx context.Context, reg *registry.Client, tools []Tool) ([]Update, error) {
+// release differs from the installed version. Failed lookups come back as a
+// *LookupError alongside the updates that were found.
+func pypiOutdated(ctx context.Context, reg *registry.Client, source string, tools []Tool) ([]Update, error) {
 	if reg == nil {
-		return nil, errors.New("no registry client")
+		return nil, errors.New(source + ": no registry client")
 	}
-	return LookupAll(ctx, tools, lookupLimit, func(ctx context.Context, t Tool) (Update, bool) {
+	return LookupAll(ctx, source, tools, lookupLimit, toolName, func(ctx context.Context, t Tool) (Update, bool, error) {
 		pkg, err := reg.PyPI(ctx, t.Name)
-		if err != nil || pkg.Version == "" || pkg.Version == t.Version {
-			return Update{}, false
-		}
-		return Update{Name: t.Name, Latest: pkg.Version, Description: pkg.Description, Homepage: pkg.Homepage}, true
-	}), nil
+		return pkgUpdate(t, pkg, err)
+	})
 }
 
 // pypiSearch returns the package named exactly q, if PyPI has it.
@@ -44,7 +42,7 @@ func pypiSearch(ctx context.Context, reg *registry.Client, source, q string) ([]
 	}
 	pkg, err := reg.PyPI(ctx, q)
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
+		if errors.Is(err, registry.ErrNotFound) {
 			return nil, nil // no such package
 		}
 		return nil, fmt.Errorf("%s: %w", source, err)
@@ -94,11 +92,7 @@ func (p *uvProvider) Outdated(ctx context.Context) ([]Update, error) {
 	if err != nil {
 		return nil, err
 	}
-	ups, err := pypiOutdated(ctx, p.reg, tools)
-	if err != nil {
-		return nil, fmt.Errorf("uv: %w", err)
-	}
-	return ups, nil
+	return pypiOutdated(ctx, p.reg, p.Name(), tools)
 }
 
 func (p *uvProvider) Upgrade(ctx context.Context, names []string, out io.Writer) error {
@@ -177,11 +171,7 @@ func (p *pipxProvider) Outdated(ctx context.Context) ([]Update, error) {
 	if err != nil {
 		return nil, err
 	}
-	ups, err := pypiOutdated(ctx, p.reg, tools)
-	if err != nil {
-		return nil, fmt.Errorf("pipx: %w", err)
-	}
-	return ups, nil
+	return pypiOutdated(ctx, p.reg, p.Name(), tools)
 }
 
 func (p *pipxProvider) Upgrade(ctx context.Context, names []string, out io.Writer) error {

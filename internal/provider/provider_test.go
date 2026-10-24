@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kamllistos/albert/internal/registry"
 	"github.com/kamllistos/albert/internal/runner"
 )
 
@@ -66,6 +69,8 @@ func TestDefaultsNonNil(t *testing.T) {
 	}
 }
 
+func itemName(n int) string { return string(rune('a' + n)) }
+
 func TestLookupAll(t *testing.T) {
 	items := make([]int, 40)
 	for i := range items {
@@ -73,7 +78,7 @@ func TestLookupAll(t *testing.T) {
 	}
 	var cur, peak int32
 	var mu sync.Mutex
-	got := LookupAll(context.Background(), items, 8, func(ctx context.Context, n int) (Update, bool) {
+	got, err := LookupAll(context.Background(), "x", items, 8, itemName, func(ctx context.Context, n int) (Update, bool, error) {
 		c := atomic.AddInt32(&cur, 1)
 		mu.Lock()
 		if c > peak {
@@ -85,10 +90,13 @@ func TestLookupAll(t *testing.T) {
 		// would overlap and the peak would blow past the limit.
 		time.Sleep(30 * time.Millisecond)
 		if n%2 == 1 {
-			return Update{}, false
+			return Update{}, false, nil
 		}
-		return Update{Name: string(rune('a' + n/2))}, true
+		return Update{Name: string(rune('a' + n/2))}, true, nil
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 20 {
 		t.Fatalf("got %d updates, want 20", len(got))
 	}
@@ -103,22 +111,92 @@ func TestLookupAll(t *testing.T) {
 	}
 }
 
+func TestLookupAllReportsFailedLookups(t *testing.T) {
+	// b fails, c is up to date, d has an update: the update is still
+	// returned, alongside an error naming exactly the failed item.
+	got, err := LookupAll(context.Background(), "npm", []int{1, 2, 3}, 2, itemName, func(ctx context.Context, n int) (Update, bool, error) {
+		switch n {
+		case 1:
+			return Update{}, false, errors.New("registry down")
+		case 2:
+			return Update{}, false, nil
+		}
+		return Update{Name: itemName(n), Latest: "2"}, true, nil
+	})
+	if len(got) != 1 || got[0].Name != "d" {
+		t.Fatalf("updates = %+v, want just d", got)
+	}
+	var le *LookupError
+	if !errors.As(err, &le) {
+		t.Fatalf("err = %v, want *LookupError", err)
+	}
+	if le.Source != "npm" || le.Total != 3 || strings.Join(le.Failed, ",") != "b" || le.All() {
+		t.Errorf("LookupError = %+v", le)
+	}
+	if !strings.Contains(err.Error(), "1 of 3") {
+		t.Errorf("message = %q, want it to say how many could not be checked", err)
+	}
+}
+
+func TestLookupAllEveryLookupFailed(t *testing.T) {
+	got, err := LookupAll(context.Background(), "uv", []int{0, 1}, 2, itemName, func(context.Context, int) (Update, bool, error) {
+		return Update{}, false, errors.New("offline")
+	})
+	var le *LookupError
+	if len(got) != 0 || !errors.As(err, &le) || !le.All() {
+		t.Fatalf("got %+v, %v; want no updates and an all-failed LookupError", got, err)
+	}
+	if err.Error() != "uv: couldn't reach the package registry to check for updates" {
+		t.Errorf("message = %q", err)
+	}
+}
+
 func TestLookupAllStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var calls int32
-	got := LookupAll(ctx, []int{1, 2, 3}, 2, func(ctx context.Context, n int) (Update, bool) {
+	got, err := LookupAll(ctx, "x", []int{1, 2, 3}, 2, itemName, func(ctx context.Context, n int) (Update, bool, error) {
 		atomic.AddInt32(&calls, 1)
-		return Update{Name: "x"}, true
+		return Update{Name: "x"}, true, nil
 	})
 	if len(got) != 0 || calls != 0 {
 		t.Fatalf("cancelled ctx should do no work: got %d updates, %d calls", len(got), calls)
 	}
+	// Lookups that never ran are unknown, not "up to date".
+	var le *LookupError
+	if !errors.As(err, &le) || len(le.Failed) != 3 {
+		t.Fatalf("err = %v, want all 3 reported as failed", err)
+	}
 }
 
 func TestLookupAllEmpty(t *testing.T) {
-	if got := LookupAll(context.Background(), []int(nil), 0, func(context.Context, int) (Update, bool) { return Update{}, true }); len(got) != 0 {
-		t.Fatalf("got %+v", got)
+	got, err := LookupAll(context.Background(), "x", []int(nil), 0, itemName, func(context.Context, int) (Update, bool, error) { return Update{}, true, nil })
+	if len(got) != 0 || err != nil {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+// outageRegistry returns a client whose every registry answers 503, like a
+// registry outage.
+func outageRegistry(t *testing.T) *registry.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	return &registry.Client{HTTP: srv.Client(), PyPIURL: srv.URL, NPMURL: srv.URL, CratesURL: srv.URL, GoProxyURL: srv.URL}
+}
+
+// requireAllFailed checks that Outdated reported a registry outage as an
+// error rather than "no updates".
+func requireAllFailed(t *testing.T, ups []Update, err error) {
+	t.Helper()
+	var le *LookupError
+	if !errors.As(err, &le) || !le.All() {
+		t.Fatalf("err = %v, want an all-failed *LookupError", err)
+	}
+	if len(ups) != 0 {
+		t.Fatalf("updates = %+v, want none", ups)
 	}
 }
 

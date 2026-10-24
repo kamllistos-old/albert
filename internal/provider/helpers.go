@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kamllistos/albert/internal/registry"
 	"github.com/kamllistos/albert/internal/runner"
 )
 
@@ -81,4 +82,35 @@ func streamEach(ctx context.Context, r runner.Runner, out io.Writer, name string
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func toolName(t Tool) string { return t.Name }
+
+// pkgUpdate turns a registry answer for t into a LookupAll result: an update
+// when the registry has a different version, nothing when it is the same or
+// the registry does not know the package, and the error when the lookup
+// failed.
+func pkgUpdate(t Tool, pkg registry.Pkg, err error) (Update, bool, error) {
+	if errors.Is(err, registry.ErrNotFound) {
+		return Update{}, false, nil
+	}
+	if err != nil {
+		return Update{}, false, err
+	}
+	if pkg.Version == "" || pkg.Version == t.Version {
+		return Update{}, false, nil
+	}
+	return Update{Name: t.Name, Latest: pkg.Version, Description: pkg.Description, Homepage: pkg.Homepage}, true, nil
+}
+
+// lookupFailure splits an Outdated error for "update all". A *LookupError is
+// soft: the updates that were found are still right, so upgrade them and
+// report the error afterwards. Anything else is hard: nothing can be
+// upgraded.
+func lookupFailure(err error) (soft, hard error) {
+	var le *LookupError
+	if errors.As(err, &le) {
+		return err, nil
+	}
+	return nil, err
 }

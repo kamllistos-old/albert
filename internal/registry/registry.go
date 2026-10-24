@@ -5,6 +5,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,11 @@ const (
 	userAgent    = "albert (github.com/kamllistos/albert)"
 	maxBodyBytes = 8 << 20
 )
+
+// ErrNotFound means the registry has no such package (HTTP 404, or 410 from
+// the Go module proxy). It is an answer, not a failure: the package simply is
+// not published there. Check with errors.Is.
+var ErrNotFound = errors.New("registry: package not found")
 
 // Pkg is what a registry knows about a package.
 type Pkg struct {
@@ -44,7 +50,7 @@ func New() *Client {
 }
 
 // get fetches rawURL and decodes the JSON body into v. Any non-200 status is
-// an error.
+// an error; 404 and 410 wrap ErrNotFound.
 func (c *Client) get(ctx context.Context, rawURL string, v any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -63,6 +69,9 @@ func (c *Client) get(ctx context.Context, rawURL string, v any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			return fmt.Errorf("%w: %s returned %s", ErrNotFound, req.URL.Redacted(), resp.Status)
+		}
 		return fmt.Errorf("registry: %s returned %s", req.URL.Redacted(), resp.Status)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBodyBytes)).Decode(v); err != nil {

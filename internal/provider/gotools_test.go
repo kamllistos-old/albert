@@ -161,6 +161,12 @@ func TestGoSkipsDevel(t *testing.T) {
 	}
 }
 
+func TestGoOutdatedRegistryOutageIsAnError(t *testing.T) {
+	dir := goBinDir(t, "goimports")
+	ups, err := NewGo(goFake(dir, map[string]string{"goimports": goVersionM(t)}), outageRegistry(t)).Outdated(context.Background())
+	requireAllFailed(t, ups, err)
+}
+
 func TestGoOutdatedNeedsRegistry(t *testing.T) {
 	dir := goBinDir(t, "goimports")
 	if _, err := NewGo(goFake(dir, map[string]string{"goimports": goVersionM(t)}), nil).Outdated(context.Background()); err == nil {

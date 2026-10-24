@@ -127,6 +127,40 @@ func TestUVOutdatedSkipsLookupFailures(t *testing.T) {
 	}
 }
 
+func TestUVOutdatedRegistryOutageIsAnError(t *testing.T) {
+	ups, err := NewUV(uvFake(t), outageRegistry(t)).Outdated(context.Background())
+	requireAllFailed(t, ups, err)
+}
+
+func TestPipxOutdatedRegistryOutageIsAnError(t *testing.T) {
+	ups, err := NewPipx(pipxFake(t), outageRegistry(t)).Outdated(context.Background())
+	requireAllFailed(t, ups, err)
+}
+
+func TestUVOutdatedPartialFailureKeepsFoundUpdates(t *testing.T) {
+	// crewai answers; manim's lookup fails with a 503.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "manim") {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"info": map[string]any{"version": "1.15.0"}})
+	}))
+	t.Cleanup(srv.Close)
+	reg := &registry.Client{HTTP: srv.Client(), PyPIURL: srv.URL}
+	ups, err := NewUV(uvFake(t), reg).Outdated(context.Background())
+	if len(ups) != 1 || ups[0].Name != "crewai" {
+		t.Fatalf("updates = %+v, want crewai", ups)
+	}
+	var le *LookupError
+	if !errors.As(err, &le) || le.All() || strings.Join(le.Failed, ",") != "manim" {
+		t.Fatalf("err = %v, want a partial LookupError naming manim", err)
+	}
+	if strings.HasPrefix(err.Error(), "uv: uv:") {
+		t.Errorf("source named twice: %q", err)
+	}
+}
+
 func TestUVUpgradeAll(t *testing.T) {
 	f := uvFake(t)
 	var out strings.Builder

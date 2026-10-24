@@ -76,6 +76,11 @@ func TestCargoOutdated(t *testing.T) {
 	}
 }
 
+func TestCargoOutdatedRegistryOutageIsAnError(t *testing.T) {
+	ups, err := NewCargo(cargoFake(t), outageRegistry(t)).Outdated(context.Background())
+	requireAllFailed(t, ups, err)
+}
+
 func TestCargoOutdatedNeedsRegistry(t *testing.T) {
 	if _, err := NewCargo(cargoFake(t), nil).Outdated(context.Background()); err == nil {
 		t.Error("want error without a registry client")

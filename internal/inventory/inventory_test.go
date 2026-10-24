@@ -54,10 +54,19 @@ func (f *fakeProvider) Outdated(ctx context.Context) ([]provider.Update, error) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.outCalls++
-	if f.outErr != nil {
+	var le *provider.LookupError
+	if f.outErr != nil && !errors.As(f.outErr, &le) {
 		return nil, f.outErr
 	}
-	return append([]provider.Update(nil), f.updates...), nil
+	// Like the registry providers: failed lookups come back with the
+	// updates that were found.
+	return append([]provider.Update(nil), f.updates...), f.outErr
+}
+
+func (f *fakeProvider) setOutdated(ups []provider.Update, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.updates, f.outErr = ups, err
 }
 
 func (f *fakeProvider) Upgrade(context.Context, []string, io.Writer) error { return nil }
@@ -377,6 +386,63 @@ func TestRescanKeepsLatest(t *testing.T) {
 	}
 	if findTool(t, inv.Snapshot(), "brew", "jq").Outdated {
 		t.Fatal("jq outdated after upgrade")
+	}
+}
+
+func TestRegistryOutageKeepsPreviousLatest(t *testing.T) {
+	p := &fakeProvider{name: "npm", updates: []provider.Update{{Name: "eslint", Latest: "9.1"}}}
+	p.setTools(tool("eslint", "9.0"), tool("tsc", "5.0"))
+	inv := New([]provider.Provider{p}, "")
+	inv.ScanAll(context.Background())
+	inv.CheckOutdated(context.Background(), "npm")
+
+	// Offline: every lookup fails.
+	p.setOutdated(nil, &provider.LookupError{Source: "npm", Failed: []string{"eslint", "tsc"}, Total: 2})
+	inv.CheckOutdated(context.Background(), "npm")
+	s := inv.Snapshot()
+	if eslint := findTool(t, s, "npm", "eslint"); !eslint.Outdated || eslint.Latest != "9.1" {
+		t.Fatalf("eslint = %+v, want the earlier update kept", eslint)
+	}
+	if st := findStatus(t, s, "npm"); st.Error == "" {
+		t.Fatal("provider status should report that updates couldn't be checked")
+	}
+
+	// Back online: the error clears.
+	p.setOutdated([]provider.Update{{Name: "eslint", Latest: "9.1"}}, nil)
+	inv.CheckOutdated(context.Background(), "npm")
+	if st := findStatus(t, inv.Snapshot(), "npm"); st.Error != "" {
+		t.Fatalf("error after a good check = %q", st.Error)
+	}
+}
+
+func TestPartialLookupFailureMergesLatest(t *testing.T) {
+	p := &fakeProvider{name: "npm", updates: []provider.Update{
+		{Name: "eslint", Latest: "9.1"},
+		{Name: "prettier", Latest: "3.1"},
+	}}
+	p.setTools(tool("eslint", "9.0"), tool("prettier", "3.0"), tool("tsc", "5.0"))
+	inv := New([]provider.Provider{p}, "")
+	inv.ScanAll(context.Background())
+	inv.CheckOutdated(context.Background(), "npm")
+
+	// prettier's lookup fails; eslint is now current; tsc has a new update.
+	p.setTools(tool("eslint", "9.1"), tool("prettier", "3.0"), tool("tsc", "5.0"))
+	p.setOutdated([]provider.Update{{Name: "tsc", Latest: "5.1"}},
+		&provider.LookupError{Source: "npm", Failed: []string{"prettier"}, Total: 3})
+	inv.Scan(context.Background(), "npm")
+	inv.CheckOutdated(context.Background(), "npm")
+	s := inv.Snapshot()
+	if pr := findTool(t, s, "npm", "prettier"); !pr.Outdated || pr.Latest != "3.1" {
+		t.Errorf("prettier = %+v, want its earlier latest kept", pr)
+	}
+	if tsc := findTool(t, s, "npm", "tsc"); !tsc.Outdated || tsc.Latest != "5.1" {
+		t.Errorf("tsc = %+v, want the fresh update", tsc)
+	}
+	if es := findTool(t, s, "npm", "eslint"); es.Outdated {
+		t.Errorf("eslint = %+v, want up to date", es)
+	}
+	if st := findStatus(t, s, "npm"); st.Error == "" {
+		t.Error("provider status should say some tools couldn't be checked")
 	}
 }
 

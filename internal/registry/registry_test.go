@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -176,6 +177,29 @@ func TestRegistry404(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "404") {
 			t.Errorf("%s: want error mentioning 404, got %v", name, err)
 		}
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: 404 should be ErrNotFound, got %v", name, err)
+		}
+	}
+}
+
+func TestRegistryGoneIsNotFound(t *testing.T) {
+	// The Go module proxy answers 410 Gone for modules it will not serve.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	})
+	if _, err := c.GoLatest(context.Background(), "example.com/nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("410 should be ErrNotFound, got %v", err)
+	}
+}
+
+func TestRegistryOutageIsNotNotFound(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	})
+	_, err := c.PyPI(context.Background(), "x")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Errorf("503 must be a real failure, not ErrNotFound: %v", err)
 	}
 }
 
