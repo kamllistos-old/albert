@@ -69,7 +69,7 @@ type Manager struct {
 	mu      sync.Mutex
 	closed  bool
 	jobs    map[string]*Job
-	order   []string // oldest first
+	order   []string          // oldest first
 	queues  map[string]*queue // by queueKey(source)
 	subs    map[int]chan Event
 	nextSub int
