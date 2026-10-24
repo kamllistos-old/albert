@@ -21,6 +21,7 @@ const state = {
 
 let es = null;
 let frame = 0;
+let frameTimer = 0;
 let lostTimer = 0;
 let refreshTimer = 0;
 
@@ -34,8 +35,19 @@ const installUI = initInstall($('view-install'), startInstall, {
 
 // ---- rendering ---------------------------------------------------------
 
+// scheduleRender batches renders into the next frame. The timeout covers
+// pages that draw no frames (background tabs, headless checks), so the DOM
+// still catches up; whichever fires first wins.
 function scheduleRender() {
-  if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); });
+  if (frame) return;
+  const run = () => {
+    cancelAnimationFrame(frame);
+    clearTimeout(frameTimer);
+    frame = 0;
+    render();
+  };
+  frame = requestAnimationFrame(run);
+  frameTimer = setTimeout(run, 250);
 }
 
 function render() {

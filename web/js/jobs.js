@@ -24,6 +24,13 @@ function finished(status) {
   return status === 'success' || status === 'failed';
 }
 
+// rank orders statuses so an entry never moves backwards (e.g. a late
+// "queued" from a submit response arriving after output has started).
+function rank(status) {
+  if (finished(status)) return 2;
+  return status === 'running' ? 1 : 0;
+}
+
 // initJobs builds the drawer inside el. It returns:
 //   add(job, label)  show a job (merging into an entry that already exists);
 //                    label is an optional display name for its tool
@@ -81,7 +88,7 @@ export function initJobs(el) {
     el.hidden = entries.size === 0;
   }
 
-  function create(id) {
+  function create(id, status) {
     const li = h('li', 'job');
     const head = h('div', 'job-head');
     const icon = h('span', 'job-icon');
@@ -100,7 +107,7 @@ export function initJobs(el) {
     details.append(out);
     li.append(head, msg, details);
     list.prepend(li);
-    const e = { job: { id, status: 'running', targets: [] }, label: '', li, icon, name, state, msg, details, out, text };
+    const e = { job: { id, status, targets: [] }, label: '', li, icon, name, state, msg, details, out, text };
     entries.set(id, e);
     return e;
   }
@@ -142,10 +149,10 @@ export function initJobs(el) {
   return {
     add(job, label) {
       const isNew = !entries.has(job.id);
-      const e = entries.get(job.id) || create(job.id);
-      const keep = finished(e.job.status) ? e.job.status : null; // never undo a finish
+      const e = entries.get(job.id) || create(job.id, job.status || 'queued');
+      const prev = e.job.status;
       e.job = { ...e.job, ...job };
-      if (keep) e.job.status = keep;
+      if (rank(prev) > rank(e.job.status)) e.job.status = prev; // never move a job backwards
       if (label) e.label = label;
       if (job.output && job.output.length > e.text.data.length) setOutput(e, job.output);
       paint(e);
@@ -154,16 +161,16 @@ export function initJobs(el) {
     },
     line(id, text) {
       const isNew = !entries.has(id);
-      const e = entries.get(id) || create(id);
+      const e = entries.get(id) || create(id, 'running'); // output means it has started
       setOutput(e, `${e.text.data}${text}\n`);
-      if (isNew || e.details.hidden) paint(e);
-      if (isNew) {
-        updateSummary();
-        setOpen(true);
-      }
+      const promote = e.job.status === 'queued'; // output means it has started
+      if (promote) e.job.status = 'running';
+      if (isNew || promote || e.details.hidden) paint(e);
+      if (isNew || promote) updateSummary();
+      if (isNew) setOpen(true);
     },
     done(job) {
-      const e = entries.get(job.id) || create(job.id);
+      const e = entries.get(job.id) || create(job.id, job.status);
       e.job = { ...e.job, ...job };
       if (job.output) setOutput(e, job.output); // the full output: lines can be dropped on the way
       if (job.status === 'success') e.details.open = false;

@@ -41,10 +41,12 @@ export function toolStatus(t, provider) {
     return { label: 'Read-only', kind: 'muted', title: 'Albert can show this tool but not change it. It came with your Mac or was installed for every user.' };
   }
   if (t.outdated) return { label: 'Update available', kind: 'accent', title: `Version ${t.latest} is available.` };
+  if (t.new) return { label: 'New', kind: 'new', title: 'Installed in the last day.' };
+  const upToDate = { label: 'Up to date', kind: 'ok', title: 'You have the newest version.' };
+  if (t.latest) return upToDate; // already known to be current, even during a re-check
   if (provider && provider.checking) return { label: 'Checking…', kind: 'muted', title: 'Albert is checking for a newer version.' };
   if (provider && provider.error) return { label: "Couldn't check", kind: 'warn', title: provider.error };
-  if (t.new) return { label: 'New', kind: 'new', title: 'Installed in the last day.' };
-  return { label: 'Up to date', kind: 'ok', title: 'You have the newest version.' };
+  return upToDate;
 }
 
 export function badge(status) {
