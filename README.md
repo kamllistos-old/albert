@@ -34,7 +34,7 @@ You can also use Albert without the browser.
 | Command | What it does |
 | --- | --- |
 | `albert up [--native] [--no-open]` | Start Albert and open it in your browser. `--native` skips Docker. `--no-open` doesn't open the browser. |
-| `albert down` | Stop Albert. |
+| `albert down [--force]` | Stop Albert. If an update or install is still running, Albert asks first (or, outside a terminal, refuses); `--force` stops it anyway. A running package manager is then asked to stop cleanly. |
 | `albert status` | Show whether Albert is running, and where. |
 | `albert list [--source S] [--outdated] [--deps] [--json]` | Show installed tools. `--source` limits to one source, `--outdated` checks for updates and shows only tools that have one, `--deps` includes tools installed as dependencies of others, `--json` prints machine-readable output. |
 | `albert outdated [--source S]` | Show only the tools that have a newer version. |

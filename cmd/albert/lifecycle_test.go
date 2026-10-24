@@ -61,6 +61,11 @@ type lcWorld struct {
 	codes     int
 	codeCalls []string // "port token"
 	opened    []string
+	uiDown    bool     // the Docker window never answers through Caddy
+	uiCalls   []string // "port token"
+	jobs      int      // queued or running jobs the agent reports
+	jobsErr   error
+	jobsCalls int
 }
 
 type lcHarness struct {
@@ -73,9 +78,9 @@ type lcHarness struct {
 func newLifecycle(t *testing.T, stdin string, tty bool) *lcHarness {
 	t.Helper()
 	t.Setenv("ALBERT_HOME", t.TempDir())
-	oldTimeout, oldInterval := healthTimeout, healthInterval
-	healthTimeout, healthInterval = 2*time.Second, time.Millisecond
-	t.Cleanup(func() { healthTimeout, healthInterval = oldTimeout, oldInterval })
+	oldTimeout, oldInterval, oldUI := healthTimeout, healthInterval, uiReadyTimeout
+	healthTimeout, healthInterval, uiReadyTimeout = 2*time.Second, time.Millisecond, 2*time.Second
+	t.Cleanup(func() { healthTimeout, healthInterval, uiReadyTimeout = oldTimeout, oldInterval, oldUI })
 
 	h := &lcHarness{
 		d:   &lcDocker{},
@@ -122,6 +127,18 @@ func newLifecycle(t *testing.T, stdin string, tty bool) *lcHarness {
 				}
 			}
 			return false
+		},
+		uiHealth: func(port int, token string) bool {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			w.uiCalls = append(w.uiCalls, strconv.Itoa(port)+" "+token)
+			return !w.uiDown
+		},
+		activeJobs: func(port int, token string) (int, error) {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			w.jobsCalls++
+			return w.jobs, w.jobsErr
 		},
 		mintCode: func(port int, token string) (string, error) {
 			w.mu.Lock()
@@ -418,11 +435,178 @@ func TestUpDockerStartFailureCleansUp(t *testing.T) {
 	}
 }
 
+func TestUpDockerChecksWindowThroughCaddy(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	if code := h.l.up(false, true); code != 0 {
+		t.Fatalf("up = %d, out:\n%s", code, h.out)
+	}
+	uiPort := flagValue(t, h.w.spawned[0], "--ui-port")
+	tok, _ := state.ReadToken(h.l.dir)
+	if len(h.w.uiCalls) == 0 || h.w.uiCalls[0] != uiPort+" "+tok {
+		t.Fatalf("window checks %v, want the UI port %s with the token", h.w.uiCalls, uiPort)
+	}
+}
+
+func TestUpDockerWindowNotReadyFallsBackToNative(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	uiReadyTimeout = 30 * time.Millisecond
+	h.w.uiDown = true
+	if code := h.l.up(false, false); code != 0 {
+		t.Fatalf("up = %d, want 0 (opened without Docker); out:\n%s", code, h.out)
+	}
+	if len(h.d.started) != 1 || h.d.stops == 0 {
+		t.Fatalf("container started %v, stopped %d times; want it started then stopped", h.d.started, h.d.stops)
+	}
+	if !slices.Equal(h.w.killed, []int{5001}) {
+		t.Fatalf("killed %v, want the docker-mode agent 5001", h.w.killed)
+	}
+	if len(h.w.spawned) != 2 || flagValue(t, h.w.spawned[1], "--mode") != "native" {
+		t.Fatalf("spawned %v, want a docker agent then a native one", h.w.spawned)
+	}
+	native := h.w.spawned[1]
+	port := flagValue(t, native, "--port")
+	if ui := flagValue(t, native, "--ui-port"); ui != port {
+		t.Fatalf("native agent ports %s/%s, want the same", port, ui)
+	}
+	st, ok := loadState(t, h.l.dir)
+	if !ok || st.Mode != "native" || st.PID != 5002 || strconv.Itoa(st.AgentPort) != port {
+		t.Fatalf("state %+v (exists %v), want the native agent", st, ok)
+	}
+	out := h.out.String()
+	if !strings.Contains(out, "Albert's window couldn't start in Docker. Opening it without Docker instead.\n") {
+		t.Fatalf("output missing the fallback message:\n%s", out)
+	}
+	ui := "http://localhost:" + port
+	if !strings.Contains(out, "Albert is running at "+ui+"\n") {
+		t.Fatalf("output missing the native address:\n%s", out)
+	}
+	if want := []string{ui + "/#code=code1"}; !slices.Equal(h.w.opened, want) {
+		t.Fatalf("opened %v, want %v (and never the Docker window)", h.w.opened, want)
+	}
+}
+
+func TestUpDockerFallbackNativeFailureCleansUp(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	uiReadyTimeout = 30 * time.Millisecond
+	healthTimeout = 30 * time.Millisecond
+	h.w.uiDown = true
+	// The docker agent answers health; the native one never does.
+	spawn := h.l.spawn
+	h.l.spawn = func(args []string, logPath string) (int, error) {
+		pid, err := spawn(args, logPath)
+		if flagValue(t, args, "--mode") == "native" {
+			h.w.mu.Lock()
+			h.w.alive[pid] = false
+			h.w.mu.Unlock()
+		}
+		return pid, err
+	}
+	if code := h.l.up(false, false); code != 1 {
+		t.Fatalf("up = %d, want 1; out:\n%s", code, h.out)
+	}
+	if !slices.Equal(h.w.killed, []int{5001, 5002}) {
+		t.Fatalf("killed %v, want both agents", h.w.killed)
+	}
+	noFile(t, filepath.Join(h.l.dir, "state.json"))
+	noFile(t, filepath.Join(h.l.dir, "token"))
+	if len(h.w.opened) != 0 {
+		t.Fatalf("opened %v after a failed start", h.w.opened)
+	}
+}
+
+func TestDownRefusesWhileUpdateRunningNonTTY(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
+	h.w.healthy = true
+	h.w.jobs = 1
+	if code := h.l.down(false); code != 1 {
+		t.Fatalf("down = %d, want 1; out:\n%s", code, h.out)
+	}
+	if want := "An update is still running. Wait for it to finish, or run \"albert down --force\".\n"; h.out.String() != want {
+		t.Fatalf("output %q, want %q", h.out, want)
+	}
+	if len(h.w.killed) != 0 {
+		t.Fatalf("killed %v while an update was running", h.w.killed)
+	}
+	if _, ok := loadState(t, h.l.dir); !ok {
+		t.Fatal("state cleared although Albert kept running")
+	}
+}
+
+func TestDownTTYPromptDefaultsToNo(t *testing.T) {
+	for _, answer := range []string{"\n", "n\n", "no\n", ""} {
+		h := newLifecycle(t, answer, true)
+		seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
+		h.w.healthy = true
+		h.w.jobs = 2
+		if code := h.l.down(false); code != 1 {
+			t.Fatalf("answer %q: down = %d, want 1; out:\n%s", answer, code, h.out)
+		}
+		if !strings.Contains(h.out.String(), "An update is still running. Stop Albert anyway? [y/N]") {
+			t.Fatalf("answer %q: missing prompt:\n%s", answer, h.out)
+		}
+		if len(h.w.killed) != 0 || strings.Contains(h.out.String(), "Albert stopped.") {
+			t.Fatalf("answer %q: Albert was stopped:\n%s", answer, h.out)
+		}
+	}
+}
+
+func TestDownTTYPromptYesStops(t *testing.T) {
+	for _, answer := range []string{"y\n", "Y\n", "yes\n"} {
+		h := newLifecycle(t, answer, true)
+		seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
+		h.w.healthy = true
+		h.w.jobs = 1
+		if code := h.l.down(false); code != 0 {
+			t.Fatalf("answer %q: down = %d; out:\n%s", answer, code, h.out)
+		}
+		if !slices.Equal(h.w.killed, []int{4242}) || !strings.HasSuffix(h.out.String(), "Albert stopped.\n") {
+			t.Fatalf("answer %q: killed %v, out:\n%s", answer, h.w.killed, h.out)
+		}
+	}
+}
+
+func TestDownForceSkipsJobCheck(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
+	h.w.healthy = true
+	h.w.jobs = 1
+	if code := h.l.down(true); code != 0 {
+		t.Fatalf("down --force = %d; out:\n%s", code, h.out)
+	}
+	if h.w.jobsCalls != 0 {
+		t.Fatalf("--force still asked for jobs %d times", h.w.jobsCalls)
+	}
+	if !slices.Equal(h.w.killed, []int{4242}) || h.out.String() != "Albert stopped.\n" {
+		t.Fatalf("killed %v, out %q", h.w.killed, h.out)
+	}
+}
+
+func TestDownChecksJobsWithToken(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	tok := seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
+	h.w.healthy = true
+	var got string
+	h.l.activeJobs = func(port int, token string) (int, error) {
+		got = strconv.Itoa(port) + " " + token
+		return 0, nil
+	}
+	if code := h.l.down(false); code != 0 {
+		t.Fatalf("down = %d; out:\n%s", code, h.out)
+	}
+	if got != "7900 "+tok {
+		t.Fatalf("jobs asked with %q, want the agent port and token", got)
+	}
+	if h.out.String() != "Albert stopped.\n" {
+		t.Fatalf("output %q", h.out)
+	}
+}
+
 func TestDownKillsAndClears(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
 	h.w.healthy = true
-	if code := h.l.down(); code != 0 {
+	if code := h.l.down(false); code != 0 {
 		t.Fatalf("down = %d, out:\n%s", code, h.out)
 	}
 	if !slices.Equal(h.w.killed, []int{4242}) {
@@ -440,7 +624,7 @@ func TestDownKillsAndClears(t *testing.T) {
 
 func TestDownNothingRunning(t *testing.T) {
 	h := newLifecycle(t, "", false)
-	if code := h.l.down(); code != 0 {
+	if code := h.l.down(false); code != 0 {
 		t.Fatalf("down = %d, out:\n%s", code, h.out)
 	}
 	if h.d.stops != 1 {
@@ -457,7 +641,7 @@ func TestDownNothingRunning(t *testing.T) {
 func TestDownAfterCrashStillStopsContainer(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7901, Mode: "docker"})
-	if code := h.l.down(); code != 0 {
+	if code := h.l.down(false); code != 0 {
 		t.Fatalf("down = %d, out:\n%s", code, h.out)
 	}
 	if h.d.stops != 1 {
@@ -476,7 +660,7 @@ func TestDownStalePIDOfAnotherProcessIsNotKilled(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
 	h.w.cmdlines[4242] = "/usr/bin/vim notes.txt" // the PID was reused
-	if code := h.l.down(); code != 0 {
+	if code := h.l.down(false); code != 0 {
 		t.Fatalf("down = %d, out:\n%s", code, h.out)
 	}
 	if len(h.w.killed) != 0 {
@@ -489,7 +673,7 @@ func TestDownKillsUnhealthyAlbertAgent(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
 	h.w.cmdlines[4242] = "/Users/me/bin/albert agent --port 7900 --ui-port 7900 --mode native"
-	if code := h.l.down(); code != 0 {
+	if code := h.l.down(false); code != 0 {
 		t.Fatalf("down = %d, out:\n%s", code, h.out)
 	}
 	if !slices.Equal(h.w.killed, []int{4242}) {
@@ -502,7 +686,7 @@ func TestDownKillFailureKeepsState(t *testing.T) {
 	seed(t, h.l.dir, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
 	h.w.healthy = true
 	h.l.kill = func(int) error { return errors.New("operation not permitted") }
-	if code := h.l.down(); code != 1 {
+	if code := h.l.down(false); code != 1 {
 		t.Fatalf("down = %d, want 1; out:\n%s", code, h.out)
 	}
 	if _, ok := loadState(t, h.l.dir); !ok {
@@ -585,6 +769,52 @@ func TestHTTPHealthAndLoginCode(t *testing.T) {
 		if h != want {
 			t.Fatalf("Host %q, want %q", h, want)
 		}
+	}
+}
+
+func TestHTTPWindowHealthGoesThroughUIPort(t *testing.T) {
+	const tok = "secret-token"
+	var host string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host = r.Host
+		if r.URL.Path != "/api/health" || r.Header.Get("Authorization") != "Bearer "+tok {
+			http.Error(w, `{"error":"no"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	if !httpUIHealth(port, tok) {
+		t.Fatal("httpUIHealth false against a working window")
+	}
+	if host != "localhost:"+u.Port() {
+		t.Fatalf("Host %q, want localhost:%s (the UI's own address)", host, u.Port())
+	}
+	if httpUIHealth(port, "wrong") {
+		t.Fatal("httpUIHealth true with a wrong token")
+	}
+}
+
+func TestHTTPActiveJobs(t *testing.T) {
+	const tok = "secret-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/api/jobs" || r.Header.Get("Authorization") != "Bearer "+tok {
+			http.Error(w, `{"error":"no"}`, http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(`{"jobs":[{"status":"running"},{"status":"success"},{"status":"queued"},{"status":"failed"}]}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+	n, err := httpActiveJobs(port, tok)
+	if err != nil || n != 2 {
+		t.Fatalf("httpActiveJobs = %d, %v; want 2 (queued + running)", n, err)
+	}
+	if _, err := httpActiveJobs(port, "wrong"); err == nil {
+		t.Fatal("httpActiveJobs succeeded with a wrong token")
 	}
 }
 

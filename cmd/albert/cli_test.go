@@ -566,3 +566,18 @@ func TestVersion(t *testing.T) {
 		t.Errorf("exit %d out %q", code, h.out)
 	}
 }
+
+func TestDownFlags(t *testing.T) {
+	t.Setenv("ALBERT_HOME", t.TempDir())
+	h := newApp("", false)
+	if code := h.run("down", "extra"); code != exitUsage {
+		t.Errorf("down extra = %d, want %d", code, exitUsage)
+	}
+	h = newApp("", false)
+	if code := h.run("down", "--force"); code != exitOK {
+		t.Errorf("down --force = %d; stderr %q", code, h.errOut)
+	}
+	if !strings.Contains(h.out.String(), "Albert isn't running.") {
+		t.Errorf("stdout %q", h.out)
+	}
+}

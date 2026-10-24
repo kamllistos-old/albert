@@ -23,6 +23,7 @@ import (
 	"github.com/kamllistos/albert"
 	"github.com/kamllistos/albert/internal/agent"
 	"github.com/kamllistos/albert/internal/dock"
+	"github.com/kamllistos/albert/internal/jobs"
 	"github.com/kamllistos/albert/internal/runner"
 	"github.com/kamllistos/albert/internal/state"
 )
@@ -37,6 +38,7 @@ const (
 var (
 	healthTimeout  = 10 * time.Second       // how long up waits for a new agent
 	healthInterval = 200 * time.Millisecond // how often it asks
+	uiReadyTimeout = 10 * time.Second       // how long up waits for the Docker window
 	killWait       = 3 * time.Second        // SIGTERM grace before SIGKILL
 )
 
@@ -61,6 +63,11 @@ type lifecycle struct {
 	kill    func(pid int) error                                      // SIGTERM, wait, SIGKILL
 	procCmd func(pid int) string                                     // pid's command line, "" if gone
 	health  func(port int, token string) bool                        // agent answers /api/health
+	// uiHealth reports whether the agent answers /api/health through the
+	// Docker window (Caddy) on the UI port.
+	uiHealth func(port int, token string) bool
+	// activeJobs counts the agent's queued and running jobs.
+	activeJobs func(port int, token string) (int, error)
 	// mintCode asks the agent for a one-time browser sign-in code.
 	mintCode func(port int, token string) (string, error)
 	openURL  func(url string) error
@@ -123,10 +130,66 @@ func (l *lifecycle) up(native, noOpen bool) int {
 		}
 	}
 
+	st, ok := l.startAgent(ctx, mode)
+	if !ok {
+		return exitFail
+	}
+
+	if mode == "docker" {
+		image := dock.Image(l.version)
+		if !l.docker.HasImage(ctx, image) {
+			fmt.Fprintln(l.out, "Preparing Albert's window (first time only)…")
+		}
+		err := l.docker.EnsureImage(ctx, image, albert.Files)
+		if err == nil {
+			err = l.docker.Start(ctx, image, st.UIPort, st.AgentPort)
+		}
+		if err != nil {
+			fmt.Fprintf(l.out, "Albert couldn't open its window in Docker: %v\n", err)
+			fmt.Fprintln(l.out, "Try again, or open Albert without Docker: albert up --native")
+			l.stopAgent(st.PID)
+			return exitFail
+		}
+		// The container started, but that doesn't mean the window works
+		// (for example, it can't reach the agent). Check through Caddy
+		// before opening the browser, and fall back to the native window.
+		if !l.waitUI(ctx, st.UIPort, st.token) {
+			if ctx.Err() != nil {
+				_ = l.docker.Stop(context.Background())
+				l.stopAgent(st.PID)
+				return exitFail
+			}
+			_ = l.docker.Stop(ctx)
+			l.stopAgent(st.PID)
+			fmt.Fprintln(l.out, "Albert's window couldn't start in Docker. Opening it without Docker instead.")
+			if st, ok = l.startAgent(ctx, "native"); !ok {
+				return exitFail
+			}
+		}
+	}
+
+	fmt.Fprintf(l.out, "Albert is running at %s\n", uiURL(st.UIPort))
+	fmt.Fprintln(l.out, "Stop it any time with: albert down")
+	if !noOpen {
+		l.open(st.State, st.token)
+	}
+	return exitOK
+}
+
+// started is a freshly started agent and its token.
+type started struct {
+	state.State
+	token string
+}
+
+// startAgent picks ports, writes a new token, starts a detached agent in mode,
+// saves the state and waits for the agent to answer. On failure it explains
+// why, stops the agent and clears the state, and reports false.
+func (l *lifecycle) startAgent(ctx context.Context, mode string) (started, bool) {
 	agentPort, err := state.FreePort(defaultAgentPort)
 	if err != nil {
 		fmt.Fprintf(l.out, "Albert couldn't find a free port: %v\n", err)
-		return exitFail
+		return started{}, false
 	}
 	uiPort := agentPort
 	if mode == "docker" {
@@ -141,13 +204,13 @@ func (l *lifecycle) up(native, noOpen bool) int {
 		}
 		if err != nil {
 			fmt.Fprintf(l.out, "Albert couldn't find a free port: %v\n", err)
-			return exitFail
+			return started{}, false
 		}
 	}
 	tok, err := state.WriteToken(l.dir)
 	if err != nil {
 		fmt.Fprintf(l.out, "Albert couldn't save its settings in %s: %v\n", l.dir, err)
-		return exitFail
+		return started{}, false
 	}
 
 	logPath := filepath.Join(l.dir, logName)
@@ -159,72 +222,72 @@ func (l *lifecycle) up(native, noOpen bool) int {
 	if err != nil {
 		_ = state.Clear(l.dir)
 		fmt.Fprintf(l.out, "Albert couldn't start: %v\n", err)
-		return exitFail
+		return started{}, false
 	}
 	// From here on any failure must stop the agent we just started.
-	fail := func() int {
-		_ = l.kill(pid)
-		_ = state.Clear(l.dir)
-		return exitFail
-	}
 	// Save state at once, so "albert down" can find the agent even if this
 	// process dies (Terminal closed, SIGKILL) before it is ready.
 	st := state.State{PID: pid, AgentPort: agentPort, UIPort: uiPort, Mode: mode, Started: time.Now()}
 	if err := state.Save(l.dir, st); err != nil {
 		fmt.Fprintf(l.out, "Albert couldn't save its settings in %s: %v\n", l.dir, err)
-		return fail()
+		l.stopAgent(pid)
+		return started{}, false
 	}
 	if !l.waitHealthy(ctx, agentPort, tok) {
 		fmt.Fprintf(l.out, "Albert couldn't start. Details: %s\n", logPath)
-		return fail()
+		l.stopAgent(pid)
+		return started{}, false
 	}
+	return started{State: st, token: tok}, true
+}
 
-	if mode == "docker" {
-		image := dock.Image(l.version)
-		if !l.docker.HasImage(ctx, image) {
-			fmt.Fprintln(l.out, "Preparing Albert's window (first time only)…")
-		}
-		err := l.docker.EnsureImage(ctx, image, albert.Files)
-		if err == nil {
-			err = l.docker.Start(ctx, image, uiPort, agentPort)
-		}
-		if err != nil {
-			fmt.Fprintf(l.out, "Albert couldn't open its window in Docker: %v\n", err)
-			fmt.Fprintln(l.out, "Try again, or open Albert without Docker: albert up --native")
-			return fail()
-		}
-	}
+// stopAgent stops an agent this up started and clears the state files.
+func (l *lifecycle) stopAgent(pid int) {
+	_ = l.kill(pid)
+	_ = state.Clear(l.dir)
+}
 
-	fmt.Fprintf(l.out, "Albert is running at %s\n", uiURL(uiPort))
-	fmt.Fprintln(l.out, "Stop it any time with: albert down")
-	if !noOpen {
-		l.open(st, tok)
-	}
-	return exitOK
+// waitUI polls the agent's health through the Docker window until it
+// answers, uiReadyTimeout passes or ctx ends.
+func (l *lifecycle) waitUI(ctx context.Context, port int, tok string) bool {
+	return poll(ctx, uiReadyTimeout, func() bool { return l.uiHealth(port, tok) })
 }
 
 // waitEnter waits for a line on l.in (or end of input). It reports false if
 // ctx ends first.
 func (l *lifecycle) waitEnter(ctx context.Context) bool {
-	done := make(chan struct{})
+	_, ok := l.readLine(ctx)
+	return ok
+}
+
+// readLine reads one line from l.in (or up to end of input), without its
+// line ending. It reports false if ctx ends first.
+func (l *lifecycle) readLine(ctx context.Context) (string, bool) {
+	done := make(chan string, 1)
 	go func() {
-		_, _ = bufio.NewReader(l.in).ReadString('\n')
-		close(done)
+		line, _ := bufio.NewReader(l.in).ReadString('\n')
+		done <- strings.TrimRight(line, "\r\n")
 	}()
 	select {
-	case <-done:
-		return true
+	case line := <-done:
+		return line, true
 	case <-ctx.Done():
-		return false
+		return "", false
 	}
 }
 
 // waitHealthy polls the agent's health until it answers, healthTimeout
 // passes or ctx ends.
 func (l *lifecycle) waitHealthy(ctx context.Context, port int, tok string) bool {
-	deadline := time.Now().Add(healthTimeout)
+	return poll(ctx, healthTimeout, func() bool { return l.health(port, tok) })
+}
+
+// poll calls ok every healthInterval until it reports true (true), timeout
+// passes or ctx ends (false).
+func poll(ctx context.Context, timeout time.Duration, ok func() bool) bool {
+	deadline := time.Now().Add(timeout)
 	for {
-		if l.health(port, tok) {
+		if ok() {
 			return true
 		}
 		if !time.Now().Before(deadline) {
@@ -253,7 +316,10 @@ func (l *lifecycle) open(st state.State, tok string) {
 	}
 }
 
-func (l *lifecycle) down() int {
+// down stops Albert. Unless force is set, it first asks the agent whether an
+// update or install is still going: stopping would cut a package manager off
+// mid-install. In a terminal it asks; otherwise it refuses.
+func (l *lifecycle) down(force bool) int {
 	st, exists, err := state.Load(l.dir)
 	if err != nil {
 		exists = true // a damaged state file still means something may be running
@@ -264,12 +330,34 @@ func (l *lifecycle) down() int {
 		return exitOK
 	}
 	_, healthy := isRunning(l)
+	if healthy && !force && l.jobsRunning(st) {
+		if !l.tty {
+			fmt.Fprintln(l.out, `An update is still running. Wait for it to finish, or run "albert down --force".`)
+			return exitFail
+		}
+		fmt.Fprint(l.out, "An update is still running. Stop Albert anyway? [y/N] ")
+		answer, ok := l.readLine(l.context())
+		if a := strings.ToLower(strings.TrimSpace(answer)); !ok || (a != "y" && a != "yes") {
+			return exitFail
+		}
+	}
 	if err := l.cleanup(st, healthy); err != nil {
 		fmt.Fprintf(l.out, "Albert couldn't stop (process %d): %v\n", st.PID, err)
 		return exitFail
 	}
 	fmt.Fprintln(l.out, "Albert stopped.")
 	return exitOK
+}
+
+// jobsRunning reports whether the agent described by st has queued or
+// running jobs. If it can't tell, it reports false: down must still work.
+func (l *lifecycle) jobsRunning(st state.State) bool {
+	tok, err := state.ReadToken(l.dir)
+	if err != nil {
+		return false
+	}
+	n, err := l.activeJobs(st.AgentPort, tok)
+	return err == nil && n > 0
 }
 
 // cleanup stops what st describes and clears the state files. The PID is
@@ -307,19 +395,21 @@ func (l *lifecycle) status() int {
 
 func (a *app) lifecycle() *lifecycle {
 	return &lifecycle{
-		dir:      state.Dir(),
-		version:  version,
-		ctx:      a.ctx,
-		docker:   a.docker,
-		spawn:    spawnDetached,
-		kill:     killProcess,
-		procCmd:  processCommand,
-		health:   httpHealth,
-		mintCode: httpLoginCode,
-		openURL:  func(u string) error { return exec.Command("open", u).Run() },
-		out:      a.stdout,
-		in:       a.stdin,
-		tty:      a.isTTY,
+		dir:        state.Dir(),
+		version:    version,
+		ctx:        a.ctx,
+		docker:     a.docker,
+		spawn:      spawnDetached,
+		kill:       killProcess,
+		procCmd:    processCommand,
+		health:     httpHealth,
+		uiHealth:   httpUIHealth,
+		activeJobs: httpActiveJobs,
+		mintCode:   httpLoginCode,
+		openURL:    func(u string) error { return exec.Command("open", u).Run() },
+		out:        a.stdout,
+		in:         a.stdin,
+		tty:        a.isTTY,
 	}
 }
 
@@ -338,10 +428,16 @@ func cmdUp(a *app, args []string) int {
 }
 
 func cmdDown(a *app, args []string) int {
-	if len(args) > 0 {
-		return a.usagef("albert down takes no arguments.")
+	flags := flag.NewFlagSet("down", flag.ContinueOnError)
+	force := flags.Bool("force", false, "stop even if an update is still running")
+	pos, code := a.parseFlags(flags, args)
+	if code >= 0 {
+		return code
 	}
-	return a.lifecycle().down()
+	if len(pos) > 0 {
+		return a.usagef("albert down takes no arguments. Option: --force.")
+	}
+	return a.lifecycle().down(*force)
 }
 
 func cmdStatus(a *app, args []string) int {
@@ -476,6 +572,21 @@ func httpHealth(port int, token string) bool {
 	if err != nil {
 		return false
 	}
+	return healthOK(req)
+}
+
+// httpUIHealth reports whether the agent answers /api/health through the
+// Docker window on port, addressed the way the browser will address it.
+func httpUIHealth(port int, token string) bool {
+	req, err := agentRequest("GET", port, "/api/health", token)
+	if err != nil {
+		return false
+	}
+	req.Host = "localhost:" + strconv.Itoa(port)
+	return healthOK(req)
+}
+
+func healthOK(req *http.Request) bool {
 	resp, err := agentClient.Do(req)
 	if err != nil {
 		return false
@@ -510,4 +621,36 @@ func httpLoginCode(port int, token string) (string, error) {
 		return "", errors.New("login code: empty")
 	}
 	return body.Code, nil
+}
+
+// httpActiveJobs counts the queued and running jobs of the agent on port.
+func httpActiveJobs(port int, token string) (int, error) {
+	req, err := agentRequest("GET", port, "/api/jobs", token)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := agentClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("jobs: status %d", resp.StatusCode)
+	}
+	var body struct {
+		Jobs []struct {
+			Status string `json:"status"`
+		} `json:"jobs"`
+	}
+	// Each job carries its full output, so the list can be large.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&body); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, j := range body.Jobs {
+		if j.Status == jobs.StatusQueued || j.Status == jobs.StatusRunning {
+			n++
+		}
+	}
+	return n, nil
 }

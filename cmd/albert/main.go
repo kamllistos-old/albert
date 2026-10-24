@@ -70,7 +70,7 @@ Usage: albert <command> [options]
 
 Commands:
   up         Open Albert in your browser     [--native] [--no-open]
-  down       Stop Albert
+  down       Stop Albert                     [--force]
   status     Show whether Albert is running
   list       Show installed tools            [--source S] [--outdated] [--deps] [--json]
   outdated   Show tools with a newer version [--source S]
