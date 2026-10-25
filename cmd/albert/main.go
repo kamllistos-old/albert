@@ -178,7 +178,17 @@ func (a *app) checkSource(source string) string {
 // and a plain kill (SIGTERM).
 var cliSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 
+// configureChildEnv sets environment variables inherited by the package
+// managers Albert runs (and by the background agent). Homebrew 7 asks
+// "proceed? [y/n]" before every install and upgrade; the user already chose
+// the action in Albert, and the window has no keyboard to answer with, so
+// Homebrew is told not to ask. Older Homebrew versions ignore the variable.
+func configureChildEnv() {
+	os.Setenv("HOMEBREW_NO_ASK", "1")
+}
+
 func main() {
+	configureChildEnv()
 	ctx, stop := signal.NotifyContext(context.Background(), cliSignals...)
 	a := &app{
 		providers: provider.Defaults(runner.Exec{Stdin: os.Stdin}, registry.New()),
