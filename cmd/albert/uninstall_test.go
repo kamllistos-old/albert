@@ -111,7 +111,7 @@ func TestUninstallYesRemovesEverything(t *testing.T) {
 	if exists(t, h.l.dir) || exists(t, h.exe) {
 		t.Fatal("settings folder or program still there")
 	}
-	if !slices.Equal(h.deleted, []string{h.l.dir, h.exe}) {
+	if n := len(h.deleted); n < 2 || !slices.Equal(h.deleted[n-2:], []string{h.l.dir, h.exe}) {
 		t.Fatalf("deleted %v", h.deleted)
 	}
 	if !exists(t, h.home) {
@@ -305,7 +305,12 @@ func TestUninstallPartialFailureContinues(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	installedAlbert(t, h)
 	h.d.removeErr = errors.New("image is being used by a container")
-	h.l.removeAll = func(p string) error { return errors.New("permission denied") }
+	h.l.removeFile = func(p string) error {
+		if strings.HasPrefix(p, h.l.dir) {
+			return errors.New("permission denied")
+		}
+		return os.Remove(p)
+	}
 	if code := h.l.uninstall(true); code != exitFail {
 		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
 	}
@@ -332,7 +337,12 @@ func TestUninstallPartialFailureContinues(t *testing.T) {
 
 func TestUninstallProgramDeleteFailure(t *testing.T) {
 	h := newLifecycle(t, "", false)
-	h.l.removeFile = func(string) error { return errors.New("read-only file system") }
+	h.l.removeFile = func(p string) error {
+		if p == h.exe {
+			return errors.New("read-only file system")
+		}
+		return os.Remove(p)
+	}
 	if code := h.l.uninstall(true); code != exitFail {
 		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
 	}
@@ -388,5 +398,165 @@ func TestUninstallCommandFlags(t *testing.T) {
 	}
 	if !strings.Contains(h.out.String(), "Run \"albert uninstall --yes\" to confirm.") {
 		t.Errorf("stdout %q", h.out)
+	}
+}
+
+// albertTempFiles are the temp files Albert's atomic writes leave behind if
+// they're interrupted (internal/state and internal/inventory).
+var albertTempFiles = []string{".state.json.123456", ".token.98765", ".cache-4242.tmp"}
+
+func writeFiles(t *testing.T, dir string, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestUninstallRemovesOnlyAlbertsFilesFromAFolderItDidntCreate(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	h.l.dir = filepath.Join(h.home, "Documents")
+	if err := os.MkdirAll(filepath.Join(h.l.dir, "project", "cache.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installedAlbert(t, h)
+	writeFiles(t, h.l.dir, "cache.json")
+	writeFiles(t, h.l.dir, albertTempFiles...)
+	writeFiles(t, h.l.dir, "thesis.docx", ".token", "state.json.bak", "cache-1.tmp")
+	writeFiles(t, filepath.Join(h.l.dir, "project"), "main.go")
+
+	if code := h.l.uninstall(true); code != exitOK {
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitOK, h.out)
+	}
+	for _, n := range append([]string{"state.json", "token", "cache.json", logName}, albertTempFiles...) {
+		if exists(t, filepath.Join(h.l.dir, n)) {
+			t.Errorf("Albert's file %s is still there", n)
+		}
+	}
+	for _, n := range []string{"thesis.docx", ".token", "state.json.bak", "cache-1.tmp", "project/main.go", "project/cache.json"} {
+		if !exists(t, filepath.Join(h.l.dir, n)) {
+			t.Errorf("the user's %s was deleted", n)
+		}
+	}
+	if want := "Albert left " + h.l.dir + " in place because it contains files Albert didn't create.\n"; !strings.Contains(h.out.String(), want) {
+		t.Fatalf("output\n%s\nwant it to contain %q", h.out, want)
+	}
+	if strings.Contains(h.out.String(), "Albert was not fully removed.") {
+		t.Fatalf("a kept folder is not a failure:\n%s", h.out)
+	}
+	if exists(t, h.exe) {
+		t.Fatal("the program should still be deleted")
+	}
+}
+
+func TestUninstallRemovesAFolderThatIsOnlyAlberts(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	installedAlbert(t, h)
+	writeFiles(t, h.l.dir, "cache.json")
+	writeFiles(t, h.l.dir, albertTempFiles...)
+	if code := h.l.uninstall(true); code != exitOK {
+		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
+	}
+	if exists(t, h.l.dir) {
+		t.Fatal("Albert's own settings folder is still there")
+	}
+	if strings.Contains(h.out.String(), "in place") {
+		t.Fatalf("output:\n%s", h.out)
+	}
+}
+
+func TestUninstallNeverDeletesRecursively(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	installedAlbert(t, h)
+	for _, p := range h.deleted {
+		t.Fatalf("deleted %s before uninstall", p)
+	}
+	if code := h.l.uninstall(true); code != exitOK {
+		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
+	}
+	// Stopping Albert already cleared state.json and token.
+	want := []string{filepath.Join(h.l.dir, logName), h.l.dir, h.exe}
+	if !slices.Equal(h.deleted, want) {
+		t.Fatalf("deleted\n%v\nwant\n%v", h.deleted, want)
+	}
+}
+
+// caseAlias returns another spelling of dir that the file system treats as the
+// same folder (a different case), or "" if the disk is case-sensitive.
+func caseAlias(t *testing.T, dir string) string {
+	t.Helper()
+	alias := filepath.Join(filepath.Dir(dir), strings.ToUpper(filepath.Base(dir)))
+	a, err := os.Stat(alias)
+	if err != nil {
+		return ""
+	}
+	d, err := os.Stat(dir)
+	if err != nil || !os.SameFile(a, d) {
+		return ""
+	}
+	return alias
+}
+
+func TestUninstallRefusesOtherSpellingsOfHome(t *testing.T) {
+	for name, pick := range map[string]func(t *testing.T, h *lcHarness) string{
+		"case variant": func(t *testing.T, h *lcHarness) string {
+			a := caseAlias(t, h.home)
+			if a == "" {
+				t.Skip("the disk is case-sensitive")
+			}
+			return a
+		},
+		"case variant of parent": func(t *testing.T, h *lcHarness) string {
+			a := caseAlias(t, filepath.Dir(h.home))
+			if a == "" {
+				t.Skip("the disk is case-sensitive")
+			}
+			return a
+		},
+		"symlink to home": func(t *testing.T, h *lcHarness) string {
+			link := filepath.Join(t.TempDir(), "alias")
+			if err := os.Symlink(h.home, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+		"symlink to parent": func(t *testing.T, h *lcHarness) string {
+			link := filepath.Join(t.TempDir(), "alias")
+			if err := os.Symlink(filepath.Dir(h.home), link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
+		"home through a symlinked path": func(t *testing.T, h *lcHarness) string {
+			link := filepath.Join(t.TempDir(), "alias")
+			if err := os.Symlink(filepath.Dir(h.home), link); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(link, filepath.Base(h.home))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newLifecycle(t, "", false)
+			// The home folder holds files with Albert's names: none may go.
+			writeFiles(t, h.home, "cache.json", logName, "precious.txt")
+			writeFiles(t, h.home, albertTempFiles...)
+			h.l.dir = pick(t, h)
+			if code := h.l.uninstall(true); code != exitFail {
+				t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
+			}
+			for _, d := range h.deleted {
+				if d != h.exe {
+					t.Fatalf("deleted %q", d)
+				}
+			}
+			entries, err := os.ReadDir(h.home)
+			if err != nil || len(entries) != 3+len(albertTempFiles) {
+				t.Fatalf("home folder changed: %v %v", entries, err)
+			}
+			if !strings.Contains(h.out.String(), "Albert didn't delete its settings folder") {
+				t.Fatalf("output:\n%s", h.out)
+			}
+		})
 	}
 }

@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -37,30 +41,62 @@ func (l *lifecycle) locateProgram() program {
 	return program{path: resolved, brew: isHomebrewPath(exe) || isHomebrewPath(resolved)}
 }
 
-// removableDir returns an error if dir must never be deleted: nothing, the
-// root, the user's home folder, or a folder that contains the home folder.
-func (l *lifecycle) removableDir(dir string) error {
-	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("it has no location")
+// albertFiles are the files Albert keeps in its settings folder.
+var albertFiles = []string{"state.json", "token", "cache.json", logName}
+
+// isAlbertFile reports whether name is a file Albert creates in its settings
+// folder: one of albertFiles, or a temp file its atomic writes leave behind
+// if interrupted (".state.json.*" and ".token.*" from internal/state,
+// ".cache-*.tmp" from internal/inventory).
+func isAlbertFile(name string) bool {
+	switch {
+	case slices.Contains(albertFiles, name):
+		return true
+	case strings.HasPrefix(name, ".state.json.") && len(name) > len(".state.json."),
+		strings.HasPrefix(name, ".token.") && len(name) > len(".token."):
+		return true
+	case strings.HasPrefix(name, ".cache-") && strings.HasSuffix(name, ".tmp") && len(name) > len(".cache-.tmp"):
+		return true
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	if abs == string(filepath.Separator) {
-		return fmt.Errorf("it is the top of the disk")
+	return false
+}
+
+// refusal is why Albert won't touch anything in a settings folder.
+type refusal struct{ reason string }
+
+func (r refusal) Error() string { return r.reason }
+
+// guardDir returns a refusal if dir (described by info) is the user's home
+// folder, a folder that contains it, or the top of the disk. Folders are
+// compared by identity (os.SameFile), not by name, so other spellings of the
+// same folder are caught too: a different case on a case-insensitive disk, a
+// symlink, or a firmlink such as /System/Volumes/Data/Users/me.
+func (l *lifecycle) guardDir(info os.FileInfo) error {
+	if root, err := os.Stat(string(filepath.Separator)); err != nil {
+		return refusal{"the top of the disk can't be checked"}
+	} else if os.SameFile(info, root) {
+		return refusal{"it is the top of the disk"}
 	}
 	home, err := l.homeDir()
 	if err != nil || strings.TrimSpace(home) == "" {
-		return fmt.Errorf("your home folder can't be found")
+		return refusal{"your home folder can't be found"}
 	}
-	for _, d := range []string{abs, realPath(abs)} {
-		for _, h := range []string{filepath.Clean(home), realPath(filepath.Clean(home))} {
-			if d == h {
-				return fmt.Errorf("it is your home folder")
+	// Walk up from home both as spelled and with symlinks resolved, so every
+	// folder that contains it is checked.
+	for _, h := range []string{home, realPath(home)} {
+		h, err := filepath.Abs(h)
+		if err != nil {
+			return refusal{"your home folder can't be found"}
+		}
+		for p := h; ; p = filepath.Dir(p) {
+			if pi, err := os.Stat(p); err == nil && os.SameFile(info, pi) {
+				if p == h {
+					return refusal{"it is your home folder"}
+				}
+				return refusal{"it contains your home folder"}
 			}
-			if rel, err := filepath.Rel(d, h); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("it contains your home folder")
+			if filepath.Dir(p) == p {
+				break
 			}
 		}
 	}
@@ -75,8 +111,66 @@ func realPath(p string) string {
 	return p
 }
 
+// settingsResult is what removeSettings did with the settings folder.
+type settingsResult int
+
+const (
+	settingsGone    settingsResult = iota // there was no settings folder
+	settingsRemoved                       // Albert's files and the folder are gone
+	settingsKept                          // Albert's files are gone; the folder holds others
+)
+
+// removeSettings deletes Albert's own files from dir, then dir itself if
+// nothing else is in it. It never deletes recursively: ALBERT_HOME can point
+// anywhere, so only files Albert creates are touched, and a folder that also
+// holds anything else is left in place. A refusal means nothing was touched.
+func (l *lifecycle) removeSettings(dir string) (settingsResult, error) {
+	if strings.TrimSpace(dir) == "" {
+		return 0, refusal{"it has no location"}
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return settingsGone, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return 0, refusal{"it is not a folder"}
+	}
+	if err := l.guardDir(info); err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	var errs []error
+	for _, e := range entries {
+		if e.IsDir() || !isAlbertFile(e.Name()) {
+			continue
+		}
+		if err := l.removeFile(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return 0, err
+	}
+	if left, err := os.ReadDir(dir); err != nil {
+		return 0, err
+	} else if len(left) > 0 {
+		return settingsKept, nil
+	}
+	if err := l.removeFile(dir); err != nil {
+		return 0, err
+	}
+	return settingsRemoved, nil
+}
+
 // uninstall removes Albert from this Mac: it stops Albert, removes its
-// Docker image, deletes its settings folder and deletes the albert program
+// Docker image, deletes its own files from its settings folder (and the
+// folder, if nothing else is in it) and deletes the albert program
 // (unless Homebrew owns it). A failed step is reported and the rest still
 // run. Without yes it asks first, and only in a terminal.
 func (l *lifecycle) uninstall(yes bool) int {
@@ -123,10 +217,14 @@ func (l *lifecycle) uninstall(yes bool) int {
 	}
 
 	// 3. The settings folder.
-	if err := l.removableDir(l.dir); err != nil {
-		fail("Albert didn't delete its settings folder (%s) because %v.", l.dir, err)
-	} else if err := l.removeAll(l.dir); err != nil {
+	var refused refusal
+	switch res, err := l.removeSettings(l.dir); {
+	case errors.As(err, &refused):
+		fail("Albert didn't delete its settings folder (%s) because %v.", l.dir, refused)
+	case err != nil:
 		fail("Albert couldn't delete its settings folder (%s): %v", l.dir, err)
+	case res == settingsKept:
+		fmt.Fprintf(l.out, "Albert left %s in place because it contains files Albert didn't create.\n", l.dir)
 	}
 
 	// 4. The program itself. A running program can be deleted on macOS.

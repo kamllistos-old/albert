@@ -79,10 +79,9 @@ type lifecycle struct {
 	tty      bool
 
 	// What uninstall needs from the machine.
-	executable func() (string, error) // this program's path
-	homeDir    func() (string, error) // the user's home folder
-	removeAll  func(path string) error
-	removeFile func(path string) error
+	executable func() (string, error)  // this program's path
+	homeDir    func() (string, error)  // the user's home folder
+	removeFile func(path string) error // never recursive
 
 	br *bufio.Reader // l.in, buffered once so successive questions share it
 }
@@ -450,7 +449,6 @@ func (a *app) lifecycle() *lifecycle {
 		tty:        a.isTTY,
 		executable: os.Executable,
 		homeDir:    os.UserHomeDir,
-		removeAll:  os.RemoveAll,
 		removeFile: os.Remove,
 	}
 }

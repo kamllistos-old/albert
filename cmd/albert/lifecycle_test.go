@@ -117,7 +117,6 @@ func newLifecycle(t *testing.T, stdin string, tty bool) *lcHarness {
 	h.l = &lifecycle{
 		executable: func() (string, error) { return h.exe, nil },
 		homeDir:    func() (string, error) { return h.home, nil },
-		removeAll:  func(p string) error { h.deleted = append(h.deleted, p); return os.RemoveAll(p) },
 		removeFile: func(p string) error { h.deleted = append(h.deleted, p); return os.Remove(p) },
 		dir:        state.Dir(),
 		version:    "dev",
