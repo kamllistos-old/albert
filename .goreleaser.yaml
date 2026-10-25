@@ -48,8 +48,9 @@ homebrew_casks:
     repository:
       owner: kamllistos
       name: homebrew-tap
-      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
-    skip_upload: '{{ if not (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") }}true{{ end }}'
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # release.yml always defines this variable (empty when the secret is unset).
+    skip_upload: '{{ if eq .Env.HOMEBREW_TAP_GITHUB_TOKEN "" }}true{{ end }}'
     commit_msg_template: "albert {{ .Tag }}"
     caveats: |
       Start Albert with:   albert up
