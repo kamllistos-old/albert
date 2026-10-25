@@ -4,7 +4,7 @@
 
 Albert shows every tool installed on your Mac by Homebrew, pip, npm and other package managers in one place, tells you which ones have updates, and lets you update or install them with a click. It runs on your Mac; the only network traffic is your package managers and version lookups on public registries.
 
-![Albert listing installed tools by source, with status and update buttons](docs/screenshot.jpg)
+![Albert: run albert up, install a tool in Terminal and watch it appear live with a New badge](docs/demo.gif)
 
 ## Install
 
