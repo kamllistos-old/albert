@@ -54,7 +54,11 @@ homebrew_casks:
     caveats: |
       Start Albert with:   albert up
       Stop it with:        albert down
-      Remove it with:      albert uninstall --yes && brew uninstall albert
+      Remove it with:      albert uninstall --yes; brew uninstall albert
+    # `brew uninstall --zap albert` also moves Albert's settings folder to the Trash.
+    zap:
+      trash:
+        - "~/.albert"
     # The binary isn't signed by Apple, so clear the download quarantine flag.
     hooks:
       post:
