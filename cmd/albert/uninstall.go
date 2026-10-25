@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/kamllistos/albert/internal/state"
 )
 
 // brewHint is shown when Homebrew owns the albert program.
@@ -171,8 +173,8 @@ func (l *lifecycle) removeSettings(dir string) (settingsResult, error) {
 // uninstall removes Albert from this Mac: it stops Albert, removes its
 // Docker image, deletes its own files from its settings folder (and the
 // folder, if nothing else is in it) and deletes the albert program
-// (unless Homebrew owns it). A failed step is reported and the rest still
-// run. Without yes it asks first, and only in a terminal.
+// (unless Homebrew owns it). If Albert can't be stopped nothing else is
+// removed; any other failed step is reported and the rest still run. Without yes it asks first, and only in a terminal.
 func (l *lifecycle) uninstall(yes bool) int {
 	prog := l.locateProgram()
 	if !yes {
@@ -201,12 +203,20 @@ func (l *lifecycle) uninstall(yes bool) int {
 
 	// 1. Stop Albert. With --yes the user already accepted cutting off an
 	// update; without it, stopAlbert asks the same question as "albert down".
+	// If it can't be stopped, nothing else is removed: deleting the program
+	// and its files under a running agent would leave it orphaned.
+	st, _, _ := state.Load(l.dir)
 	switch l.stopAlbert(yes) {
 	case stopDeclined:
 		fmt.Fprintln(l.out, "Nothing was removed.")
 		return exitFail
-	case stopFailed:
-		failed = true // stopAlbert already said why
+	case stopFailed: // stopAlbert already said why
+		if st.PID > 1 {
+			fmt.Fprintf(l.out, "Albert couldn't be stopped, so nothing else was removed. Try again, or stop it with: kill %d\n", st.PID)
+		} else {
+			fmt.Fprintln(l.out, "Albert couldn't be stopped, so nothing else was removed. Try again.")
+		}
+		return exitFail
 	}
 
 	// 2. Docker's copy of the window. No Docker, nothing to remove.

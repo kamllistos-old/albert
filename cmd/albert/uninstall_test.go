@@ -371,18 +371,20 @@ func TestUninstallCantFindProgram(t *testing.T) {
 	}
 }
 
-func TestUninstallStopFailureContinues(t *testing.T) {
+func TestUninstallStopFailureRemovesNothingElse(t *testing.T) {
 	h := newLifecycle(t, "", false)
 	installedAlbert(t, h)
 	h.l.kill = func(int) error { return errors.New("operation not permitted") }
 	if code := h.l.uninstall(true); code != exitFail {
-		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
 	}
-	if !strings.Contains(h.out.String(), "Albert couldn't stop (process 4242): operation not permitted") {
-		t.Fatalf("output:\n%s", h.out)
+	want := "Albert couldn't stop (process 4242): operation not permitted\n" +
+		"Albert couldn't be stopped, so nothing else was removed. Try again, or stop it with: kill 4242\n"
+	if h.out.String() != want {
+		t.Fatalf("output\n%q\nwant\n%q", h.out, want)
 	}
-	if exists(t, h.l.dir) || exists(t, h.exe) || len(h.d.removed) != 1 {
-		t.Fatalf("later steps should still run; images %v", h.d.removed)
+	if !exists(t, filepath.Join(h.l.dir, logName)) || !exists(t, h.exe) || len(h.d.removed) != 0 || len(h.deleted) != 0 {
+		t.Fatalf("later steps ran; images %v, deleted %v", h.d.removed, h.deleted)
 	}
 }
 
