@@ -39,11 +39,13 @@ Some updates need your Mac password (for example, tools installed system-wide). 
 
 ## Uninstall
 
-One command removes Albert, its settings folder (`~/.albert`) and its window image from Docker:
+One command removes Albert, its files in its settings folder (`~/.albert`) and its window image from Docker:
 
 ```sh
 albert uninstall
 ```
+
+Albert removes only its own files from `~/.albert` (or the folder `ALBERT_HOME` points to), then the folder itself if nothing else is in it. If you put other files there, Albert leaves them and the folder in place.
 
 If you installed with Homebrew, finish with `brew uninstall albert`. Albert never touches the tools it manages — uninstalling Albert leaves all your Homebrew, pip, npm and other tools exactly as they are.
 
@@ -53,7 +55,7 @@ If you installed with Homebrew, finish with `brew uninstall albert`. Albert neve
 ```sh
 albert down
 rm -rf ~/.albert
-docker rmi albert-ui:dev $(docker images -q ghcr.io/kamllistos/albert-ui) 2>/dev/null
+docker rmi albert-ui:dev $(docker images ghcr.io/kamllistos/albert-ui --format '{{.Repository}}:{{.Tag}}' 2>/dev/null) 2>/dev/null
 rm -f ~/.local/bin/albert        # or: brew uninstall albert
 ```
 
@@ -67,7 +69,7 @@ You can also use Albert without the browser.
 | --- | --- |
 | `albert up [--native] [--no-open]` | Start Albert and open it in your browser. `--native` skips Docker. `--no-open` doesn't open the browser. |
 | `albert down [--force]` | Stop Albert. If an update or install is still running, Albert asks first (or, outside a terminal, refuses); `--force` stops it anyway. A running package manager is then asked to stop cleanly. |
-| `albert uninstall [--yes]` | Remove Albert from this Mac: stops it, deletes its settings folder, removes its window image from Docker and deletes the `albert` program. Asks first in a terminal; elsewhere it needs `--yes`. If Homebrew installed Albert, the program is left for `brew uninstall albert`. |
+| `albert uninstall [--yes]` | Remove Albert from this Mac: stops it, deletes its own files from its settings folder, removes its window image from Docker and deletes the `albert` program. Asks first in a terminal; elsewhere it needs `--yes`. If Homebrew installed Albert, the program is left for `brew uninstall albert`. |
 | `albert status` | Show whether Albert is running, and where. |
 | `albert list [--source S] [--outdated] [--deps] [--json]` | Show installed tools. `--source` limits to one source, `--outdated` checks for updates and shows only tools that have one, `--deps` includes tools installed as dependencies of others, `--json` prints machine-readable output. |
 | `albert outdated [--source S]` | Show only the tools that have a newer version. |
