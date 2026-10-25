@@ -135,15 +135,29 @@ func (d Docker) Stop(ctx context.Context) error {
 
 // RemoveImages deletes Albert's window image for version, the local dev
 // image and every registry tag of the window image, so an old version
-// doesn't linger. An image that is already gone is fine. It tries every image
-// and reports the ones it couldn't remove.
+// doesn't linger. It first removes the window container: it was started with
+// --rm, so after a stop Docker may still be removing it, and an image in use
+// can't be removed. Images are never force-removed. An image or container
+// that is already gone is fine. It tries every image and reports the ones it
+// couldn't remove.
+//
+// A runner error (as opposed to docker exiting non-zero) means docker
+// couldn't be run at all or ctx ended, so every later call would fail the
+// same way: it returns at once.
 func (d Docker) RemoveImages(ctx context.Context, version string) error {
 	var errs []error
+	res, err := d.R.Run(ctx, "docker", "rm", "-f", Container)
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 && !strings.Contains(string(res.Stderr), "No such container") {
+		errs = append(errs, fmt.Errorf("docker rm %s failed: %s", Container, output(res)))
+	}
 	targets := []string{Image(version)}
 	if !slices.Contains(targets, Image("dev")) {
 		targets = append(targets, Image("dev"))
 	}
-	res, err := d.R.Run(ctx, "docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}")
+	res, err = d.R.Run(ctx, "docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}")
 	switch {
 	case err != nil:
 		return err
@@ -152,7 +166,8 @@ func (d Docker) RemoveImages(ctx context.Context, version string) error {
 	default:
 		for _, line := range strings.Split(string(res.Stdout), "\n") {
 			img := strings.TrimSpace(line)
-			if strings.HasPrefix(img, registryImage) && !slices.Contains(targets, img) {
+			// "<none>" is an untagged image: there is no name to remove it by.
+			if strings.HasPrefix(img, registryImage) && img != registryImage+"<none>" && !slices.Contains(targets, img) {
 				targets = append(targets, img)
 			}
 		}
@@ -160,7 +175,7 @@ func (d Docker) RemoveImages(ctx context.Context, version string) error {
 	for _, img := range targets {
 		res, err := d.R.Run(ctx, "docker", "rmi", img)
 		if err != nil {
-			return err
+			return err // see above: docker can't be run
 		}
 		if res.ExitCode != 0 && !strings.Contains(string(res.Stderr), "No such image") {
 			errs = append(errs, fmt.Errorf("docker rmi %s failed: %s", img, output(res)))

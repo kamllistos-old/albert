@@ -49,8 +49,8 @@ type dockerControl interface {
 	EnsureImage(ctx context.Context, image string, files fs.FS) error
 	Start(ctx context.Context, image string, uiPort, agentPort int) error
 	Stop(ctx context.Context) error
-	// RemoveImages deletes Albert's window images (this version's, the dev
-	// build and every registry tag).
+	// RemoveImages removes the window container, then deletes Albert's
+	// window images (this version's, the dev build and every registry tag).
 	RemoveImages(ctx context.Context, version string) error
 }
 
