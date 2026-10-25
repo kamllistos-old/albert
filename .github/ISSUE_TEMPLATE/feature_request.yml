@@ -1,0 +1,14 @@
+name: Feature or new source request
+description: Suggest an improvement or a package manager Albert should support
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Albert to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help you?

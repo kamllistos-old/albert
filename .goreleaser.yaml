@@ -32,3 +32,33 @@ checksum:
 
 changelog:
   disable: true
+
+# Homebrew: `brew install kamllistos/tap/albert`. Publishes the cask to the
+# kamllistos/homebrew-tap repo. Needs the HOMEBREW_TAP_GITHUB_TOKEN secret (a
+# token that can push to that repo); without it the release still succeeds and
+# just skips the tap update.
+homebrew_casks:
+  - name: albert
+    ids:
+      - albert
+    binaries:
+      - albert
+    homepage: "https://github.com/kamllistos/albert"
+    description: "See, update and install every dev tool on your Mac in one place"
+    repository:
+      owner: kamllistos
+      name: homebrew-tap
+      token: '{{ envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "" }}'
+    skip_upload: '{{ if not (envOrDefault "HOMEBREW_TAP_GITHUB_TOKEN" "") }}true{{ end }}'
+    commit_msg_template: "albert {{ .Tag }}"
+    caveats: |
+      Start Albert with:   albert up
+      Stop it with:        albert down
+      Remove it with:      albert uninstall --yes && brew uninstall albert
+    # The binary isn't signed by Apple, so clear the download quarantine flag.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/albert"]
+          end
