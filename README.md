@@ -1,16 +1,26 @@
 # Albert
 
+[![test](https://github.com/kamllistos/albert/actions/workflows/test.yml/badge.svg)](https://github.com/kamllistos/albert/actions/workflows/test.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Albert shows every tool installed on your Mac by Homebrew, pip, npm and other package managers in one place, tells you which ones have updates, and lets you update or install them with a click. It runs on your Mac; the only network traffic is your package managers and version lookups on public registries.
+
+![Albert listing installed tools by source, with status and update buttons](docs/screenshot.jpg)
 
 ## Install
 
-Paste this into Terminal:
+**With Homebrew** (recommended):
+
+```sh
+brew install kamllistos/tap/albert
+```
+
+**Or with the install script** — paste this into Terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kamllistos/albert/main/install.sh | sh
 ```
 
-Albert works on Apple silicon and Intel Macs. It installs into `~/.local/bin`, and the installer tells you if that folder needs adding to your PATH.
+Albert works on Apple silicon and Intel Macs (macOS). The script installs into `~/.local/bin` and tells you if that folder needs adding to your PATH.
 
 ## Use it
 
@@ -26,6 +36,28 @@ albert down    # stop Albert
 Docker (Docker Desktop or OrbStack) is optional. If it's running, Albert uses it for its window. If it isn't, Albert asks whether to open without it, and opens in your browser directly. Everything works the same either way.
 
 Some updates need your Mac password (for example, tools installed system-wide). Albert can't ask for it in the browser, so it tells you to run `albert update <tool>` in Terminal instead.
+
+## Uninstall
+
+One command removes Albert, its settings folder (`~/.albert`) and its window image from Docker:
+
+```sh
+albert uninstall
+```
+
+If you installed with Homebrew, finish with `brew uninstall albert`. Albert never touches the tools it manages — uninstalling Albert leaves all your Homebrew, pip, npm and other tools exactly as they are.
+
+<details>
+<summary>Removing it by hand</summary>
+
+```sh
+albert down
+rm -rf ~/.albert
+docker rmi albert-ui:dev $(docker images -q ghcr.io/kamllistos/albert-ui) 2>/dev/null
+rm -f ~/.local/bin/albert        # or: brew uninstall albert
+```
+
+</details>
 
 ## Command line
 
@@ -100,4 +132,8 @@ The web page lives in `web/` and the container recipe in `docker/`; both are emb
 
 Pushing a tag like `v0.1.0` runs two workflows: `release.yml` (GoReleaser builds `albert_darwin_arm64.tar.gz`, `albert_darwin_amd64.tar.gz` and `checksums.txt` for a GitHub release; `install.sh` downloads these names, so change them together) and `image.yml` (builds the `albert-ui` image for linux/amd64 and linux/arm64 and pushes it to GHCR as `:<version>` and `:latest`). `test.yml` runs `go vet` and `go test -race` on every push and pull request.
 
-Note: the repository `kamllistos/albert` is currently private. Until it is public, the `curl` installer above and the GHCR image can't be reached by other people. When making it public, also check that the `albert-ui` package on GHCR is set to public.
+The release also updates the Homebrew cask in [`kamllistos/homebrew-tap`](https://github.com/kamllistos/homebrew-tap) when the repository secret `HOMEBREW_TAP_GITHUB_TOKEN` is set (a fine-grained token with *Contents: read and write* on that tap repo only). Without the secret the release still succeeds and the tap step is skipped. After the first release, make sure the `albert-ui` package on GHCR is public so `albert up` can pull it instead of building it locally.
+
+## License
+
+[MIT](LICENSE)
