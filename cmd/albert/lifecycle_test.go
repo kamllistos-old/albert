@@ -31,6 +31,9 @@ type lcDocker struct {
 	ensured []string
 	started []string // "image ui agent"
 	stops   int
+
+	removeErr error
+	removed   []string // versions whose images were removed
 }
 
 func (d *lcDocker) Ready(context.Context) error { return d.readyErr }
@@ -46,6 +49,10 @@ func (d *lcDocker) Start(_ context.Context, image string, uiPort, agentPort int)
 	return d.startErr
 }
 func (d *lcDocker) Stop(context.Context) error { d.stops++; return errors.New("docker is not running") }
+func (d *lcDocker) RemoveImages(_ context.Context, version string) error {
+	d.removed = append(d.removed, version)
+	return d.removeErr
+}
 
 // lcWorld is the fake outside world of a lifecycle: processes, the agent's
 // health endpoint and the browser.
@@ -73,6 +80,11 @@ type lcHarness struct {
 	d   *lcDocker
 	w   *lcWorld
 	out *bytes.Buffer
+
+	// For uninstall: a fake home folder and a fake albert program, both
+	// inside t.TempDir(), and the paths the lifecycle was asked to delete.
+	home, exe string
+	deleted   []string
 }
 
 func newLifecycle(t *testing.T, stdin string, tty bool) *lcHarness {
@@ -88,10 +100,27 @@ func newLifecycle(t *testing.T, stdin string, tty bool) *lcHarness {
 		out: &bytes.Buffer{},
 	}
 	w := h.w
+	root, err := filepath.EvalSymlinks(t.TempDir()) // /var is a symlink on macOS
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.home = filepath.Join(root, "home")
+	h.exe = filepath.Join(root, "bin", "albert")
+	for _, dir := range []string{h.home, filepath.Dir(h.exe)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(h.exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	h.l = &lifecycle{
-		dir:     state.Dir(),
-		version: "dev",
-		docker:  h.d,
+		executable: func() (string, error) { return h.exe, nil },
+		homeDir:    func() (string, error) { return h.home, nil },
+		removeFile: func(p string) error { h.deleted = append(h.deleted, p); return os.Remove(p) },
+		dir:        state.Dir(),
+		version:    "dev",
+		docker:     h.d,
 		spawn: func(args []string, logPath string) (int, error) {
 			w.mu.Lock()
 			defer w.mu.Unlock()

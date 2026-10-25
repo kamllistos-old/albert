@@ -239,3 +239,124 @@ func TestHasImage(t *testing.T) {
 		t.Fatal("HasImage true for a missing image")
 	}
 }
+
+const (
+	imageList   = "docker image ls --format {{.Repository}}:{{.Tag}}"
+	rmContainer = "docker rm -f albert-ui"
+	noContainer = "Error response from daemon: No such container: albert-ui"
+)
+
+func TestRemoveImagesRemovesBuildAndEveryRegistryTag(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer: ok("albert-ui"),
+		imageList:   ok("ghcr.io/kamllistos/albert-ui:0.9.0\nghcr.io/kamllistos/albert-ui:<none>\nghcr.io/kamllistos/albert-ui:1.0.0\nnginx:latest\nghcr.io/kamllistos/other:1\n"),
+		"docker rmi ghcr.io/kamllistos/albert-ui:1.0.0": ok("Untagged"),
+		"docker rmi albert-ui:dev":                      fail("Error response from daemon: No such image: albert-ui:dev"),
+		"docker rmi ghcr.io/kamllistos/albert-ui:0.9.0": ok("Untagged"),
+	}}
+	if err := (Docker{R: f}).RemoveImages(context.Background(), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		rmContainer, // the --rm container would race the image removal
+		imageList,
+		"docker rmi ghcr.io/kamllistos/albert-ui:1.0.0",
+		"docker rmi albert-ui:dev",
+		"docker rmi ghcr.io/kamllistos/albert-ui:0.9.0",
+	}
+	if strings.Join(f.Calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls =\n%s\nwant\n%s", strings.Join(f.Calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestRemoveImagesIgnoresMissingImages(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer:                fail(noContainer),
+		imageList:                  ok(""),
+		"docker rmi albert-ui:dev": fail("Error response from daemon: No such image: albert-ui:dev"),
+	}}
+	if err := (Docker{R: f}).RemoveImages(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(strings.Join(f.Calls, "\n"), "docker rmi albert-ui:dev"); n != 1 {
+		t.Fatalf("calls = %v, want albert-ui:dev removed once", f.Calls)
+	}
+}
+
+func TestRemoveImagesReportsFailuresButTriesTheRest(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer: fail(noContainer),
+		imageList:   ok("ghcr.io/kamllistos/albert-ui:0.9.0\n"),
+		"docker rmi ghcr.io/kamllistos/albert-ui:1.0.0": fail("conflict: image is being used by running container abc"),
+		"docker rmi albert-ui:dev":                      fail("No such image"),
+		"docker rmi ghcr.io/kamllistos/albert-ui:0.9.0": ok("Untagged"),
+	}}
+	err := (Docker{R: f}).RemoveImages(context.Background(), "1.0.0")
+	if err == nil || !strings.Contains(err.Error(), "being used by running container") {
+		t.Fatalf("err = %v, want the docker message", err)
+	}
+	if !hasCall(f, "docker rmi ghcr.io/kamllistos/albert-ui:0.9.0") {
+		t.Fatalf("calls = %v, want the remaining tags still removed", f.Calls)
+	}
+}
+
+func TestRemoveImagesListFailureStillRemovesKnownImages(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer:                fail(noContainer),
+		imageList:                  fail("Cannot connect to the Docker daemon"),
+		"docker rmi albert-ui:dev": ok("Untagged"),
+	}}
+	if err := (Docker{R: f}).RemoveImages(context.Background(), "dev"); err == nil {
+		t.Fatal("want the listing failure reported")
+	}
+	if !hasCall(f, "docker rmi albert-ui:dev") {
+		t.Fatalf("calls = %v", f.Calls)
+	}
+}
+
+func TestRemoveImagesNeverForcesImages(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer:                fail(noContainer),
+		imageList:                  ok(""),
+		"docker rmi albert-ui:dev": ok("Untagged"),
+	}}
+	if err := (Docker{R: f}).RemoveImages(context.Background(), "dev"); err != nil {
+		t.Fatalf("a missing container should be ignored: %v", err)
+	}
+	for _, c := range f.Calls {
+		if strings.HasPrefix(c, "docker rmi") && strings.Contains(c, "-f") {
+			t.Fatalf("forced an image removal: %q", c)
+		}
+	}
+}
+
+func TestRemoveImagesReportsContainerFailureButStillRemovesImages(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer:                fail("permission denied while trying to connect"),
+		imageList:                  ok(""),
+		"docker rmi albert-ui:dev": ok("Untagged"),
+	}}
+	err := (Docker{R: f}).RemoveImages(context.Background(), "dev")
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("err = %v, want the container failure", err)
+	}
+	if !hasCall(f, "docker rmi albert-ui:dev") {
+		t.Fatalf("calls = %v", f.Calls)
+	}
+}
+
+func TestRemoveImagesSkipsUntaggedImages(t *testing.T) {
+	f := &runner.Fake{Responses: map[string]runner.Result{
+		rmContainer:                fail(noContainer),
+		imageList:                  ok("ghcr.io/kamllistos/albert-ui:<none>\n"),
+		"docker rmi albert-ui:dev": ok("Untagged"),
+	}}
+	if err := (Docker{R: f}).RemoveImages(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.Calls {
+		if strings.Contains(c, "<none>") {
+			t.Fatalf("tried to remove an untagged image: %q", c)
+		}
+	}
+}

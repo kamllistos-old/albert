@@ -51,17 +51,18 @@ type command func(a *app, args []string) int
 
 // commands is the one place sub-commands are registered.
 var commands = map[string]command{
-	"up":       cmdUp,
-	"down":     cmdDown,
-	"status":   cmdStatus,
-	"agent":    cmdAgent, // hidden: run by "albert up" in the background
-	"list":     cmdList,
-	"outdated": cmdOutdated,
-	"update":   cmdUpdate,
-	"install":  cmdInstall,
-	"search":   cmdSearch,
-	"doctor":   cmdDoctor,
-	"version":  cmdVersion,
+	"up":        cmdUp,
+	"down":      cmdDown,
+	"uninstall": cmdUninstall,
+	"status":    cmdStatus,
+	"agent":     cmdAgent, // hidden: run by "albert up" in the background
+	"list":      cmdList,
+	"outdated":  cmdOutdated,
+	"update":    cmdUpdate,
+	"install":   cmdInstall,
+	"search":    cmdSearch,
+	"doctor":    cmdDoctor,
+	"version":   cmdVersion,
 }
 
 const helpText = `Albert shows the tools installed on this Mac and keeps them up to date.
@@ -71,6 +72,7 @@ Usage: albert <command> [options]
 Commands:
   up         Open Albert in your browser     [--native] [--no-open]
   down       Stop Albert                     [--force]
+  uninstall  Remove Albert and its data      [--yes]
   status     Show whether Albert is running
   list       Show installed tools            [--source S] [--outdated] [--deps] [--json]
   outdated   Show tools with a newer version [--source S]
@@ -169,12 +171,6 @@ func (a *app) checkSource(source string) string {
 		names[i] = p.Name()
 	}
 	return fmt.Sprintf("Unknown source %q. Sources are: %s.", source, strings.Join(names, ", "))
-}
-
-// isTerminal reports whether f is an interactive terminal.
-func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
 // cliSignals cancel the command's context instead of killing the process,

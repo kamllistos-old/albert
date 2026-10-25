@@ -49,6 +49,9 @@ type dockerControl interface {
 	EnsureImage(ctx context.Context, image string, files fs.FS) error
 	Start(ctx context.Context, image string, uiPort, agentPort int) error
 	Stop(ctx context.Context) error
+	// RemoveImages removes the window container, then deletes Albert's
+	// window images (this version's, the dev build and every registry tag).
+	RemoveImages(ctx context.Context, version string) error
 }
 
 // lifecycle starts, stops and reports on the background agent (and, in
@@ -74,6 +77,13 @@ type lifecycle struct {
 	out      io.Writer
 	in       io.Reader
 	tty      bool
+
+	// What uninstall needs from the machine.
+	executable func() (string, error)  // this program's path
+	homeDir    func() (string, error)  // the user's home folder
+	removeFile func(path string) error // never recursive
+
+	br *bufio.Reader // l.in, buffered once so successive questions share it
 }
 
 func (l *lifecycle) context() context.Context {
@@ -263,9 +273,13 @@ func (l *lifecycle) waitEnter(ctx context.Context) bool {
 // readLine reads one line from l.in (or up to end of input), without its
 // line ending. It reports false if ctx ends first.
 func (l *lifecycle) readLine(ctx context.Context) (string, bool) {
+	if l.br == nil {
+		l.br = bufio.NewReader(l.in)
+	}
+	br := l.br
 	done := make(chan string, 1)
 	go func() {
-		line, _ := bufio.NewReader(l.in).ReadString('\n')
+		line, _ := br.ReadString('\n')
 		done <- strings.TrimRight(line, "\r\n")
 	}()
 	select {
@@ -316,36 +330,59 @@ func (l *lifecycle) open(st state.State, tok string) {
 	}
 }
 
-// down stops Albert. Unless force is set, it first asks the agent whether an
-// update or install is still going: stopping would cut a package manager off
-// mid-install. In a terminal it asks; otherwise it refuses.
-func (l *lifecycle) down(force bool) int {
+// stopResult is how stopAlbert ended.
+type stopResult int
+
+const (
+	stopNotRunning stopResult = iota // nothing was running
+	stopDone                         // Albert was running and is now stopped
+	stopDeclined                     // an update is running and Albert was left alone
+	stopFailed                       // Albert couldn't be stopped
+)
+
+// stopAlbert stops Albert and says why when it doesn't. Unless force is set,
+// it first asks the agent whether an update or install is still going:
+// stopping would cut a package manager off mid-install. In a terminal it
+// asks; otherwise it refuses. It prints no success message: down and
+// uninstall each say their own.
+func (l *lifecycle) stopAlbert(force bool) stopResult {
 	st, exists, err := state.Load(l.dir)
 	if err != nil {
 		exists = true // a damaged state file still means something may be running
 	}
 	if !exists {
 		_ = l.docker.Stop(l.context()) // a container left behind by a lost state file
-		fmt.Fprintln(l.out, "Albert isn't running.")
-		return exitOK
+		return stopNotRunning
 	}
 	_, healthy := isRunning(l)
 	if healthy && !force && l.jobsRunning(st) {
 		if !l.tty {
 			fmt.Fprintln(l.out, `An update is still running. Wait for it to finish, or run "albert down --force".`)
-			return exitFail
+			return stopDeclined
 		}
 		fmt.Fprint(l.out, "An update is still running. Stop Albert anyway? [y/N] ")
 		answer, ok := l.readLine(l.context())
 		if a := strings.ToLower(strings.TrimSpace(answer)); !ok || (a != "y" && a != "yes") {
-			return exitFail
+			return stopDeclined
 		}
 	}
 	if err := l.cleanup(st, healthy); err != nil {
 		fmt.Fprintf(l.out, "Albert couldn't stop (process %d): %v\n", st.PID, err)
+		return stopFailed
+	}
+	return stopDone
+}
+
+// down stops Albert; see stopAlbert for when it asks first.
+func (l *lifecycle) down(force bool) int {
+	switch l.stopAlbert(force) {
+	case stopNotRunning:
+		fmt.Fprintln(l.out, "Albert isn't running.")
+	case stopDone:
+		fmt.Fprintln(l.out, "Albert stopped.")
+	default:
 		return exitFail
 	}
-	fmt.Fprintln(l.out, "Albert stopped.")
 	return exitOK
 }
 
@@ -410,6 +447,9 @@ func (a *app) lifecycle() *lifecycle {
 		out:        a.stdout,
 		in:         a.stdin,
 		tty:        a.isTTY,
+		executable: os.Executable,
+		homeDir:    os.UserHomeDir,
+		removeFile: os.Remove,
 	}
 }
 
