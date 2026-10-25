@@ -230,6 +230,8 @@ func TestIsHomebrewPath(t *testing.T) {
 		"/opt/homebrew/Cellar/albert/1.0.0/bin/albert":          true,
 		"/opt/homebrew/bin/albert":                              true,
 		"/usr/local/Cellar/albert/1.0.0/bin/albert":             true,
+		"/usr/local/Caskroom/albert/0.1.0/albert":               true,
+		"/opt/homebrew/Caskroom/albert/0.1.0/albert":            true,
 		"/home/linuxbrew/.linuxbrew/Cellar/albert/1/bin/albert": true,
 		"/usr/local/bin/albert":                                 false,
 		"/Users/me/bin/albert":                                  false,
