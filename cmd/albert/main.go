@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/kamllistos/albert/internal/dock"
 	"github.com/kamllistos/albert/internal/provider"
@@ -174,9 +175,12 @@ func (a *app) checkSource(source string) string {
 }
 
 // isTerminal reports whether f is an interactive terminal.
+// isTerminal reports whether f is an interactive terminal. A character device
+// is not enough: /dev/null is one too, so ask the tty driver directly.
 func isTerminal(f *os.File) bool {
-	st, err := f.Stat()
-	return err == nil && st.Mode()&os.ModeCharDevice != 0
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TIOCGETA), uintptr(unsafe.Pointer(&t)), 0, 0, 0)
+	return errno == 0
 }
 
 // cliSignals cancel the command's context instead of killing the process,
