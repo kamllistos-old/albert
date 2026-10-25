@@ -35,6 +35,7 @@ You can also use Albert without the browser.
 | --- | --- |
 | `albert up [--native] [--no-open]` | Start Albert and open it in your browser. `--native` skips Docker. `--no-open` doesn't open the browser. |
 | `albert down [--force]` | Stop Albert. If an update or install is still running, Albert asks first (or, outside a terminal, refuses); `--force` stops it anyway. A running package manager is then asked to stop cleanly. |
+| `albert uninstall [--yes]` | Remove Albert from this Mac: stops it, deletes its settings folder, removes its window image from Docker and deletes the `albert` program. Asks first in a terminal; elsewhere it needs `--yes`. If Homebrew installed Albert, the program is left for `brew uninstall albert`. |
 | `albert status` | Show whether Albert is running, and where. |
 | `albert list [--source S] [--outdated] [--deps] [--json]` | Show installed tools. `--source` limits to one source, `--outdated` checks for updates and shows only tools that have one, `--deps` includes tools installed as dependencies of others, `--json` prints machine-readable output. |
 | `albert outdated [--source S]` | Show only the tools that have a newer version. |

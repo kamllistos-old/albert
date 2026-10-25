@@ -67,6 +67,7 @@ func (d fakeDocker) HasImage(context.Context, string) bool            { return f
 func (d fakeDocker) EnsureImage(context.Context, string, fs.FS) error { return nil }
 func (d fakeDocker) Start(context.Context, string, int, int) error    { return nil }
 func (d fakeDocker) Stop(context.Context) error                       { return nil }
+func (d fakeDocker) RemoveImages(context.Context, string) error       { return nil }
 
 type harness struct {
 	a           *app
