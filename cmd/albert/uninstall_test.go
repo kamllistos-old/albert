@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -59,8 +61,8 @@ func TestUninstallTTYDeclines(t *testing.T) {
 	for _, answer := range []string{"\n", "n\n", "no\n", "maybe\n", ""} {
 		h := newLifecycle(t, answer, true)
 		installedAlbert(t, h)
-		if code := h.l.uninstall(false); code != exitOK {
-			t.Fatalf("answer %q: uninstall = %d; out:\n%s", answer, code, h.out)
+		if code := h.l.uninstall(false); code != exitFail {
+			t.Fatalf("answer %q: uninstall = %d, want %d (like declining down); out:\n%s", answer, code, exitFail, h.out)
 		}
 		want := "This removes Albert from this Mac: it stops Albert, deletes its settings folder (" + h.l.dir +
 			"), removes its window image from Docker, and deletes the albert program (" + h.exe +
@@ -560,5 +562,57 @@ func TestUninstallRefusesOtherSpellingsOfHome(t *testing.T) {
 				t.Fatalf("output:\n%s", h.out)
 			}
 		})
+	}
+}
+
+func TestUninstallCtrlCAtThePromptFails(t *testing.T) {
+	h := newLifecycle(t, "", true)
+	installedAlbert(t, h)
+	r, w := io.Pipe() // nobody answers
+	t.Cleanup(func() { w.Close() })
+	h.l.in = r
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.l.ctx = ctx
+	if code := h.l.uninstall(false); code != exitFail {
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
+	}
+	if !strings.HasSuffix(h.out.String(), "Nothing was removed.\n") {
+		t.Fatalf("output:\n%s", h.out)
+	}
+	assertNothingRemoved(t, h)
+}
+
+func TestUninstallCancelledBeforeStartingRemovesNothing(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	installedAlbert(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.l.ctx = ctx
+	if code := h.l.uninstall(true); code != exitFail {
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
+	}
+	if h.out.String() != "Nothing was removed.\n" {
+		t.Fatalf("output %q", h.out)
+	}
+	assertNothingRemoved(t, h)
+}
+
+func TestUninstallCtrlCPartWayStopsAndFails(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	installedAlbert(t, h)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	h.l.ctx = ctx
+	kill := h.l.kill
+	h.l.kill = func(pid int) error { cancel(); return kill(pid) } // Ctrl-C while stopping
+	if code := h.l.uninstall(true); code != exitFail {
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
+	}
+	if h.out.String() != "Albert was not fully removed.\n" {
+		t.Fatalf("output %q", h.out)
+	}
+	if len(h.d.removed) != 0 || len(h.deleted) != 0 || !exists(t, h.exe) {
+		t.Fatalf("kept going after Ctrl-C: images %v, deleted %v", h.d.removed, h.deleted)
 	}
 }

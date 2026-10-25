@@ -174,7 +174,9 @@ func (l *lifecycle) removeSettings(dir string) (settingsResult, error) {
 // Docker image, deletes its own files from its settings folder (and the
 // folder, if nothing else is in it) and deletes the albert program
 // (unless Homebrew owns it). If Albert can't be stopped nothing else is
-// removed; any other failed step is reported and the rest still run. Without yes it asks first, and only in a terminal.
+// removed; any other failed step is reported and the rest still run. Without
+// yes it asks first, and only in a terminal. Declining, or Ctrl-C at any
+// point, exits 1; Ctrl-C stops before the next step.
 func (l *lifecycle) uninstall(yes bool) int {
 	prog := l.locateProgram()
 	if !yes {
@@ -191,8 +193,13 @@ func (l *lifecycle) uninstall(yes bool) int {
 		answer, ok := l.readLine(l.context())
 		if a := strings.ToLower(strings.TrimSpace(answer)); !ok || (a != "y" && a != "yes") {
 			fmt.Fprintln(l.out, "Nothing was removed.")
-			return exitOK
+			return exitFail
 		}
+	}
+	cancelled := func() bool { return l.context().Err() != nil }
+	if cancelled() {
+		fmt.Fprintln(l.out, "Nothing was removed.")
+		return exitFail
 	}
 
 	failed := false
@@ -219,33 +226,46 @@ func (l *lifecycle) uninstall(yes bool) int {
 		return exitFail
 	}
 
-	// 2. Docker's copy of the window. No Docker, nothing to remove.
-	if l.docker.Ready(l.context()) == nil {
-		if err := l.docker.RemoveImages(l.context(), l.version); err != nil {
-			fail("Albert couldn't remove its window image from Docker: %v", err)
-		}
+	steps := []func(){
+		// 2. Docker's copy of the window. No Docker, nothing to remove.
+		func() {
+			if l.docker.Ready(l.context()) == nil {
+				if err := l.docker.RemoveImages(l.context(), l.version); err != nil {
+					fail("Albert couldn't remove its window image from Docker: %v", err)
+				}
+			}
+		},
+		// 3. The settings folder.
+		func() {
+			var refused refusal
+			switch res, err := l.removeSettings(l.dir); {
+			case errors.As(err, &refused):
+				fail("Albert didn't delete its settings folder (%s) because %v.", l.dir, refused)
+			case err != nil:
+				fail("Albert couldn't delete its settings folder (%s): %v", l.dir, err)
+			case res == settingsKept:
+				fmt.Fprintf(l.out, "Albert left %s in place because it contains files Albert didn't create.\n", l.dir)
+			}
+		},
+		// 4. The program itself. A running program can be deleted on macOS.
+		func() {
+			switch {
+			case prog.err != nil:
+				fail("Albert couldn't find the albert program to delete: %v", prog.err)
+			case prog.brew:
+			default:
+				if err := l.removeFile(prog.path); err != nil {
+					fail("Albert couldn't delete the albert program (%s): %v", prog.path, err)
+				}
+			}
+		},
 	}
-
-	// 3. The settings folder.
-	var refused refusal
-	switch res, err := l.removeSettings(l.dir); {
-	case errors.As(err, &refused):
-		fail("Albert didn't delete its settings folder (%s) because %v.", l.dir, refused)
-	case err != nil:
-		fail("Albert couldn't delete its settings folder (%s): %v", l.dir, err)
-	case res == settingsKept:
-		fmt.Fprintf(l.out, "Albert left %s in place because it contains files Albert didn't create.\n", l.dir)
-	}
-
-	// 4. The program itself. A running program can be deleted on macOS.
-	switch {
-	case prog.err != nil:
-		fail("Albert couldn't find the albert program to delete: %v", prog.err)
-	case prog.brew:
-	default:
-		if err := l.removeFile(prog.path); err != nil {
-			fail("Albert couldn't delete the albert program (%s): %v", prog.path, err)
+	for _, step := range steps {
+		if cancelled() {
+			fmt.Fprintln(l.out, "Albert was not fully removed.")
+			return exitFail
 		}
+		step()
 	}
 
 	if failed {
@@ -256,7 +276,7 @@ func (l *lifecycle) uninstall(yes bool) int {
 	if prog.brew {
 		fmt.Fprintln(l.out, brewHint)
 	}
-	if failed {
+	if failed || cancelled() {
 		return exitFail
 	}
 	return exitOK
