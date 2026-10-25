@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	uninstallPromptFmt = "This removes Albert from this Mac: it stops Albert, deletes its settings folder (%s), removes its window image from Docker, and deletes the albert program (%s). Continue? [y/N]"
+	uninstallPromptFmt = "This removes Albert from this Mac: it stops Albert, deletes Albert's files in its settings folder (%s), removes its window image from Docker, and deletes the albert program (%s). Continue? [y/N]"
 	wantBrewHint       = "Albert was installed with Homebrew. Finish with: brew uninstall albert"
 )
 
@@ -70,7 +70,7 @@ func TestUninstallTTYDeclines(t *testing.T) {
 		if code := h.l.uninstall(false); code != exitFail {
 			t.Fatalf("answer %q: uninstall = %d, want %d (like declining down); out:\n%s", answer, code, exitFail, h.out)
 		}
-		want := "This removes Albert from this Mac: it stops Albert, deletes its settings folder (" + h.l.dir +
+		want := "This removes Albert from this Mac: it stops Albert, deletes Albert's files in its settings folder (" + h.l.dir +
 			"), removes its window image from Docker, and deletes the albert program (" + h.exe +
 			"). Continue? [y/N] Nothing was removed.\n"
 		if h.out.String() != want {
@@ -176,7 +176,7 @@ func TestUninstallHomebrewKeepsTheProgram(t *testing.T) {
 	if code := h.l.uninstall(false); code != exitOK {
 		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
 	}
-	want := "This removes Albert from this Mac: it stops Albert, deletes its settings folder (" + h.l.dir +
+	want := "This removes Albert from this Mac: it stops Albert, deletes Albert's files in its settings folder (" + h.l.dir +
 		"), and removes its window image from Docker. Continue? [y/N] Removed the settings folder (" + h.l.dir + ").\n" +
 		"Albert has been removed.\n" + wantBrewHint + "\n"
 	if h.out.String() != want {
@@ -289,22 +289,15 @@ func TestUninstallRefusesDangerousSettingsFolder(t *testing.T) {
 			if code := h.l.uninstall(true); code != exitFail {
 				t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
 			}
-			for _, d := range h.deleted {
-				if d != h.exe {
-					t.Fatalf("tried to delete %q", d)
-				}
+			if len(h.deleted) != 0 || len(h.d.removed) != 0 || len(h.w.killed) != 0 {
+				t.Fatalf("touched something: deleted %v, images %v, killed %v", h.deleted, h.d.removed, h.w.killed)
 			}
-			if !exists(t, marker) {
-				t.Fatal("the home folder was emptied")
+			if !exists(t, marker) || !exists(t, h.exe) {
+				t.Fatal("the home folder or the program was touched")
 			}
-			if !strings.Contains(h.out.String(), "Albert didn't delete its settings folder") {
-				t.Fatalf("output:\n%s", h.out)
-			}
-			if exists(t, h.exe) {
-				t.Fatal("the remaining steps should still run: the program should be gone")
-			}
-			if strings.Contains(h.out.String(), "Albert has been removed.") {
-				t.Fatalf("claimed success:\n%s", h.out)
+			out := h.out.String()
+			if !strings.HasPrefix(out, "Albert didn't delete its settings folder (") || !strings.HasSuffix(out, "Nothing was removed.\n") {
+				t.Fatalf("output:\n%s", out)
 			}
 		})
 	}
@@ -416,6 +409,12 @@ func TestUninstallCommandFlags(t *testing.T) {
 // they're interrupted (internal/state and internal/inventory).
 var albertTempFiles = []string{".state.json.123456", ".token.98765", ".cache-4242.tmp"}
 
+// userLookalikes look like Albert's files but aren't what os.CreateTemp makes.
+var userLookalikes = []string{
+	"thesis.docx", ".token", "state.json.bak", "cache-1.tmp",
+	".token.bak", ".state.json.old", ".cache-old.tmp", ".token.", ".cache-.tmp", ".cache-12.tmp.old",
+}
+
 func writeFiles(t *testing.T, dir string, names ...string) {
 	t.Helper()
 	for _, n := range names {
@@ -434,7 +433,7 @@ func TestUninstallRemovesOnlyAlbertsFilesFromAFolderItDidntCreate(t *testing.T) 
 	installedAlbert(t, h)
 	writeFiles(t, h.l.dir, "cache.json")
 	writeFiles(t, h.l.dir, albertTempFiles...)
-	writeFiles(t, h.l.dir, "thesis.docx", ".token", "state.json.bak", "cache-1.tmp")
+	writeFiles(t, h.l.dir, userLookalikes...)
 	writeFiles(t, filepath.Join(h.l.dir, "project"), "main.go")
 
 	if code := h.l.uninstall(true); code != exitOK {
@@ -445,7 +444,7 @@ func TestUninstallRemovesOnlyAlbertsFilesFromAFolderItDidntCreate(t *testing.T) 
 			t.Errorf("Albert's file %s is still there", n)
 		}
 	}
-	for _, n := range []string{"thesis.docx", ".token", "state.json.bak", "cache-1.tmp", "project/main.go", "project/cache.json"} {
+	for _, n := range append(userLookalikes, "project/main.go", "project/cache.json") {
 		if !exists(t, filepath.Join(h.l.dir, n)) {
 			t.Errorf("the user's %s was deleted", n)
 		}
@@ -554,22 +553,21 @@ func TestUninstallRefusesOtherSpellingsOfHome(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newLifecycle(t, "", false)
 			// The home folder holds files with Albert's names: none may go.
+			seed(t, h.home, state.State{PID: 4242, AgentPort: 7900, UIPort: 7900, Mode: "native"})
 			writeFiles(t, h.home, "cache.json", logName, "precious.txt")
 			writeFiles(t, h.home, albertTempFiles...)
 			h.l.dir = pick(t, h)
 			if code := h.l.uninstall(true); code != exitFail {
 				t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
 			}
-			for _, d := range h.deleted {
-				if d != h.exe {
-					t.Fatalf("deleted %q", d)
-				}
+			if len(h.deleted) != 0 || len(h.w.killed) != 0 || !exists(t, h.exe) {
+				t.Fatalf("touched something: deleted %v, killed %v", h.deleted, h.w.killed)
 			}
 			entries, err := os.ReadDir(h.home)
-			if err != nil || len(entries) != 3+len(albertTempFiles) {
+			if err != nil || len(entries) != 5+len(albertTempFiles) {
 				t.Fatalf("home folder changed: %v %v", entries, err)
 			}
-			if !strings.Contains(h.out.String(), "Albert didn't delete its settings folder") {
+			if !strings.Contains(h.out.String(), "Albert didn't delete its settings folder") || !strings.HasSuffix(h.out.String(), "Nothing was removed.\n") {
 				t.Fatalf("output:\n%s", h.out)
 			}
 		})
@@ -625,5 +623,26 @@ func TestUninstallCtrlCPartWayStopsAndFails(t *testing.T) {
 	}
 	if len(h.d.removed) != 0 || len(h.deleted) != 0 || !exists(t, h.exe) {
 		t.Fatalf("kept going after Ctrl-C: images %v, deleted %v", h.d.removed, h.deleted)
+	}
+}
+
+func TestUninstallRefusingHomeKeepsItsStateFiles(t *testing.T) {
+	h := newLifecycle(t, "", false)
+	h.l.dir = h.home // ALBERT_HOME=~
+	installedAlbert(t, h)
+	if code := h.l.uninstall(true); code != exitFail {
+		t.Fatalf("uninstall = %d, want %d; out:\n%s", code, exitFail, h.out)
+	}
+	for _, n := range []string{"state.json", "token", logName} {
+		if !exists(t, filepath.Join(h.home, n)) {
+			t.Errorf("%s was deleted from the home folder", n)
+		}
+	}
+	if len(h.w.killed) != 0 || len(h.deleted) != 0 || len(h.d.removed) != 0 {
+		t.Fatalf("touched something: killed %v, deleted %v, images %v", h.w.killed, h.deleted, h.d.removed)
+	}
+	want := "Albert didn't delete its settings folder (" + h.home + ") because it is your home folder.\nNothing was removed.\n"
+	if h.out.String() != want {
+		t.Fatalf("output\n%q\nwant\n%q", h.out, want)
 	}
 }

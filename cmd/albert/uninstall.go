@@ -48,19 +48,30 @@ var albertFiles = []string{"state.json", "token", "cache.json", logName}
 
 // isAlbertFile reports whether name is a file Albert creates in its settings
 // folder: one of albertFiles, or a temp file its atomic writes leave behind
-// if interrupted (".state.json.*" and ".token.*" from internal/state,
-// ".cache-*.tmp" from internal/inventory).
+// if interrupted. os.CreateTemp replaces the "*" in its pattern with digits,
+// so only those names match: ".state.json.*" and ".token.*" from
+// internal/state, ".cache-*.tmp" from internal/inventory.
 func isAlbertFile(name string) bool {
-	switch {
-	case slices.Contains(albertFiles, name):
-		return true
-	case strings.HasPrefix(name, ".state.json.") && len(name) > len(".state.json."),
-		strings.HasPrefix(name, ".token.") && len(name) > len(".token."):
-		return true
-	case strings.HasPrefix(name, ".cache-") && strings.HasSuffix(name, ".tmp") && len(name) > len(".cache-.tmp"):
+	if slices.Contains(albertFiles, name) {
 		return true
 	}
+	for _, pattern := range []string{".state.json.*", ".token.*", ".cache-*.tmp"} {
+		prefix, suffix, _ := strings.Cut(pattern, "*")
+		if len(name) > len(prefix)+len(suffix) && strings.HasPrefix(name, prefix) && strings.HasSuffix(name, suffix) &&
+			allDigits(name[len(prefix):len(name)-len(suffix)]) {
+			return true
+		}
+	}
 	return false
+}
+
+func allDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // refusal is why Albert won't touch anything in a settings folder.
@@ -122,6 +133,23 @@ const (
 	settingsKept                          // Albert's files are gone; the folder holds others
 )
 
+// checkSettings returns a refusal if Albert must not touch anything in dir
+// (see guardDir). A folder that doesn't exist, or can't be checked for
+// another reason, is left for removeSettings to report.
+func (l *lifecycle) checkSettings(dir string) error {
+	if strings.TrimSpace(dir) == "" {
+		return refusal{"it has no location"}
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil
+	}
+	if !info.IsDir() {
+		return refusal{"it is not a folder"}
+	}
+	return l.guardDir(info)
+}
+
 // removeSettings deletes Albert's own files from dir, then dir itself if
 // nothing else is in it. It never deletes recursively: ALBERT_HOME can point
 // anywhere, so only files Albert creates are touched, and a folder that also
@@ -173,10 +201,11 @@ func (l *lifecycle) removeSettings(dir string) (settingsResult, error) {
 // uninstall removes Albert from this Mac: it stops Albert, removes its
 // Docker image, deletes its own files from its settings folder (and the
 // folder, if nothing else is in it) and deletes the albert program
-// (unless Homebrew owns it). If Albert can't be stopped nothing else is
-// removed; any other failed step is reported and the rest still run. Without
-// yes it asks first, and only in a terminal. Declining, or Ctrl-C at any
-// point, exits 1; Ctrl-C stops before the next step.
+// (unless Homebrew owns it). If the settings folder is one Albert must not
+// touch (see guardDir), or Albert can't be stopped, nothing is removed; any
+// other failed step is reported and the rest still run. Without yes it asks
+// first, and only in a terminal. Declining, or Ctrl-C at any point, exits 1;
+// Ctrl-C stops before the next step.
 func (l *lifecycle) uninstall(yes bool) int {
 	prog := l.locateProgram()
 	if !yes {
@@ -184,7 +213,7 @@ func (l *lifecycle) uninstall(yes bool) int {
 			fmt.Fprintln(l.out, `Run "albert uninstall --yes" to confirm.`)
 			return exitUsage
 		}
-		fmt.Fprintf(l.out, "This removes Albert from this Mac: it stops Albert, deletes its settings folder (%s), ", l.dir)
+		fmt.Fprintf(l.out, "This removes Albert from this Mac: it stops Albert, deletes Albert's files in its settings folder (%s), ", l.dir)
 		if prog.path != "" && !prog.brew {
 			fmt.Fprintf(l.out, "removes its window image from Docker, and deletes the albert program (%s). Continue? [y/N] ", prog.path)
 		} else {
@@ -207,6 +236,15 @@ func (l *lifecycle) uninstall(yes bool) int {
 	fail := func(format string, args ...any) {
 		failed = true
 		fmt.Fprintf(l.out, format+"\n", args...)
+	}
+
+	// Check the settings folder before anything else: stopping Albert clears
+	// state.json and token in it, which must not happen in, say, the home
+	// folder.
+	if err := l.checkSettings(l.dir); err != nil {
+		fmt.Fprintf(l.out, "Albert didn't delete its settings folder (%s) because %v.\n", l.dir, err)
+		fmt.Fprintln(l.out, "Nothing was removed.")
+		return exitFail
 	}
 
 	// 1. Stop Albert. With --yes the user already accepted cutting off an
