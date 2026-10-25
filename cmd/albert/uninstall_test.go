@@ -35,6 +35,12 @@ func installedAlbert(t *testing.T, h *lcHarness) {
 	h.w.healthy = true
 }
 
+// removedLines is what a successful uninstall says it removed.
+func removedLines(h *lcHarness) string {
+	return "Removed the settings folder (" + h.l.dir + ").\n" +
+		"Removed the albert program (" + h.exe + ").\n"
+}
+
 func assertNothingRemoved(t *testing.T, h *lcHarness) {
 	t.Helper()
 	if !exists(t, h.l.dir) || !exists(t, h.exe) {
@@ -81,7 +87,7 @@ func TestUninstallTTYConfirms(t *testing.T) {
 		if code := h.l.uninstall(false); code != exitOK {
 			t.Fatalf("answer %q: uninstall = %d; out:\n%s", answer, code, h.out)
 		}
-		if want := fmt.Sprintf(uninstallPromptFmt, h.l.dir, h.exe) + " Albert has been removed.\n"; h.out.String() != want {
+		if want := fmt.Sprintf(uninstallPromptFmt, h.l.dir, h.exe) + " " + removedLines(h) + "Albert has been removed.\n"; h.out.String() != want {
 			t.Fatalf("answer %q: output\n%q\nwant\n%q", answer, h.out, want)
 		}
 		if exists(t, h.l.dir) || exists(t, h.exe) {
@@ -98,8 +104,8 @@ func TestUninstallYesRemovesEverything(t *testing.T) {
 	if code := h.l.uninstall(true); code != exitOK {
 		t.Fatalf("uninstall --yes = %d; out:\n%s", code, h.out)
 	}
-	if h.out.String() != "Albert has been removed.\n" {
-		t.Fatalf("output %q", h.out)
+	if want := removedLines(h) + "Albert has been removed.\n"; h.out.String() != want {
+		t.Fatalf("output\n%q\nwant\n%q", h.out, want)
 	}
 	if !slices.Equal(h.w.killed, []int{4242}) {
 		t.Fatalf("killed %v, want the running agent", h.w.killed)
@@ -152,7 +158,7 @@ func TestUninstallWhenNothingRunning(t *testing.T) {
 	if code := h.l.uninstall(true); code != exitOK {
 		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
 	}
-	if h.out.String() != "Albert has been removed.\n" || len(h.w.killed) != 0 {
+	if h.out.String() != removedLines(h)+"Albert has been removed.\n" || len(h.w.killed) != 0 {
 		t.Fatalf("output %q, killed %v", h.out, h.w.killed)
 	}
 }
@@ -171,7 +177,8 @@ func TestUninstallHomebrewKeepsTheProgram(t *testing.T) {
 		t.Fatalf("uninstall = %d; out:\n%s", code, h.out)
 	}
 	want := "This removes Albert from this Mac: it stops Albert, deletes its settings folder (" + h.l.dir +
-		"), and removes its window image from Docker. Continue? [y/N] Albert has been removed.\n" + wantBrewHint + "\n"
+		"), and removes its window image from Docker. Continue? [y/N] Removed the settings folder (" + h.l.dir + ").\n" +
+		"Albert has been removed.\n" + wantBrewHint + "\n"
 	if h.out.String() != want {
 		t.Fatalf("output\n%q\nwant\n%q", h.out, want)
 	}
@@ -255,7 +262,7 @@ func TestUninstallSkipsImagesWhenDockerNotReady(t *testing.T) {
 	if len(h.d.removed) != 0 {
 		t.Fatalf("removed images %v although Docker isn't ready", h.d.removed)
 	}
-	if h.out.String() != "Albert has been removed.\n" {
+	if h.out.String() != removedLines(h)+"Albert has been removed.\n" {
 		t.Fatalf("output %q: skipping Docker should be silent", h.out)
 	}
 	if exists(t, h.l.dir) || exists(t, h.exe) {
@@ -448,6 +455,10 @@ func TestUninstallRemovesOnlyAlbertsFilesFromAFolderItDidntCreate(t *testing.T) 
 	}
 	if strings.Contains(h.out.String(), "Albert was not fully removed.") {
 		t.Fatalf("a kept folder is not a failure:\n%s", h.out)
+	}
+	if want := "Removed the albert program (" + h.exe + ").\nAlbert has been removed.\n"; !strings.HasSuffix(h.out.String(), want) ||
+		strings.Contains(h.out.String(), "Removed the settings folder") {
+		t.Fatalf("output\n%s\nwant it to end with %q and not claim the folder", h.out, want)
 	}
 	if exists(t, h.exe) {
 		t.Fatal("the program should still be deleted")

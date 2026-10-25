@@ -203,6 +203,7 @@ func (l *lifecycle) uninstall(yes bool) int {
 	}
 
 	failed := false
+	var removed []string // what was removed, said on success
 	fail := func(format string, args ...any) {
 		failed = true
 		fmt.Fprintf(l.out, format+"\n", args...)
@@ -245,6 +246,8 @@ func (l *lifecycle) uninstall(yes bool) int {
 				fail("Albert couldn't delete its settings folder (%s): %v", l.dir, err)
 			case res == settingsKept:
 				fmt.Fprintf(l.out, "Albert left %s in place because it contains files Albert didn't create.\n", l.dir)
+			case res == settingsRemoved:
+				removed = append(removed, fmt.Sprintf("Removed the settings folder (%s).", l.dir))
 			}
 		},
 		// 4. The program itself. A running program can be deleted on macOS.
@@ -256,6 +259,8 @@ func (l *lifecycle) uninstall(yes bool) int {
 			default:
 				if err := l.removeFile(prog.path); err != nil {
 					fail("Albert couldn't delete the albert program (%s): %v", prog.path, err)
+				} else {
+					removed = append(removed, fmt.Sprintf("Removed the albert program (%s).", prog.path))
 				}
 			}
 		},
@@ -271,6 +276,9 @@ func (l *lifecycle) uninstall(yes bool) int {
 	if failed {
 		fmt.Fprintln(l.out, "Albert was not fully removed.")
 	} else {
+		for _, line := range removed {
+			fmt.Fprintln(l.out, line)
+		}
 		fmt.Fprintln(l.out, "Albert has been removed.")
 	}
 	if prog.brew {
