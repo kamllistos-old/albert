@@ -61,9 +61,12 @@ homebrew_casks:
       trash:
         - "~/.albert"
     # The binary isn't signed by Apple, so clear the download quarantine flag.
+    # Homebrew's declarative postflight_steps (the Ruby postflight block is
+    # deprecated). must_succeed: false because xattr exits non-zero when the
+    # quarantine flag isn't there, which would otherwise abort the install.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/albert"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/albert"], must_succeed: false
           end
