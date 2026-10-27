@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -279,6 +280,65 @@ func cmdInstall(a *app, args []string) int {
 	pos, code := a.parseFlags(fs, args)
 	if code >= 0 {
 		return code
+	}
+
+	func cmdDelete(a *app, args []string) int {
+		fs := flag.NewFlagSet("albert delete", flag.ContinueOnError)
+		source := fs.String("source", "", "the source the tool comes from")
+		yes := fs.Bool("yes", false, "don't ask before deleting")
+		pos, code := a.parseFlags(fs, args)
+		if code >= 0 {
+			return code
+		}
+		if len(pos) != 1 {
+			return a.usagef("Say which tool to delete: albert delete <tool>.")
+		}
+		name := pos[0]
+		if !provider.ValidName(name) {
+			return a.usagef("%q isn't a valid tool name.", name)
+		}
+		if msg := a.checkSource(*source); msg != "" {
+			return a.usagef("%s", msg)
+		}
+		return a.deleteOne(name, *source, *yes)
+	}
+
+	func (a *app) deleteOne(name, source string, yes bool) int {
+		snap := a.scan(source, false)
+		src, err := resolveSource(snap.Tools, name, source, a.stdin, a.stdout, a.isTTY)
+		if err != nil {
+			return a.failf("%v", err)
+		}
+		if !yes {
+			if !a.isTTY {
+				return a.usagef(`Run "albert delete %s --source %s --yes" to confirm.`, name, src)
+			}
+			fmt.Fprintf(a.stdout, "Delete %s from %s? [y/N]: ", name, src)
+			answer, _ := bufio.NewReader(a.stdin).ReadString('\n')
+			switch strings.ToLower(strings.TrimSpace(answer)) {
+			case "y", "yes":
+			default:
+				fmt.Fprintln(a.stdout, "Nothing deleted.")
+				return exitOK
+			}
+		}
+		p, _ := a.find(src)
+		fmt.Fprintf(a.stdout, "Deleting %s from %s…\n", name, src)
+		if err := p.Remove(a.context(), name, a.stdout); err != nil {
+			return a.failf("Couldn't delete %q: %s", name, deleteMessage(name, err))
+		}
+		fmt.Fprintf(a.stdout, "Deleted %s.\n", name)
+		return exitOK
+	}
+
+	func deleteMessage(name string, err error) string {
+		if errors.Is(err, provider.ErrReadOnly) {
+			return name + " is read-only: it is managed outside Albert."
+		}
+		if errors.Is(err, provider.ErrUnsupported) {
+			return name + " can't be deleted with this source."
+		}
+		return err.Error()
 	}
 	if len(pos) != 1 {
 		return a.usagef("Say which tool to install: albert install <tool>.")

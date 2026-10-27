@@ -15,6 +15,7 @@ function title(job, label) {
   const targets = job.targets || [];
   const what = label || targets[0];
   if (job.kind === 'install') return `Installing ${what || 'a tool'}`;
+  if (job.kind === 'delete') return `Deleting ${what || 'a tool'}`;
   if (targets.length === 0) return job.source ? `Updating all ${sourceLabel(job.source)} tools` : 'Updating';
   if (targets.length === 1) return `Updating ${what}`;
   return `Updating ${targets.length} tools`;

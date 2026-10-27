@@ -203,6 +203,8 @@ func (p *goProvider) Install(ctx context.Context, name string, out io.Writer) er
 	return runStream(ctx, p.r, out, "go", goInstallArgs(name)...)
 }
 
+func (p *goProvider) Remove(context.Context, string, io.Writer) error { return ErrUnsupported }
+
 func (p *goProvider) Search(context.Context, string) ([]Result, error) {
 	return nil, ErrUnsupported
 }

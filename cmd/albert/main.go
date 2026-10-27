@@ -59,6 +59,7 @@ var commands = map[string]command{
 	"list":      cmdList,
 	"outdated":  cmdOutdated,
 	"update":    cmdUpdate,
+	"delete":    cmdDelete,
 	"install":   cmdInstall,
 	"search":    cmdSearch,
 	"doctor":    cmdDoctor,
@@ -77,6 +78,7 @@ Commands:
   list       Show installed tools            [--source S] [--outdated] [--deps] [--json]
   outdated   Show tools with a newer version [--source S]
   update     Update one tool or all of them  <tool> | --all  [--source S] [--include-pip]
+  delete     Delete one installed tool       <tool> [--source S] [--yes]
   install    Install a tool                  <tool> [--source S]
   search     Find tools to install           <query>
   doctor     Check which package managers Albert can use

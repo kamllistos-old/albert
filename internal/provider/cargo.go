@@ -132,6 +132,13 @@ func (p *cargoProvider) Install(ctx context.Context, name string, out io.Writer)
 	return runStream(ctx, p.r, out, "cargo", cargoInstallArgs(name)...)
 }
 
+func (p *cargoProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if err := checkNames("cargo", []string{name}); err != nil {
+		return err
+	}
+	return runStream(ctx, p.r, out, "cargo", "uninstall", name)
+}
+
 func (p *cargoProvider) Search(context.Context, string) ([]Result, error) {
 	return nil, ErrUnsupported
 }

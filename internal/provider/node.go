@@ -185,6 +185,13 @@ func (p *nodeProvider) Install(ctx context.Context, name string, out io.Writer) 
 	return runStream(ctx, p.r, out, p.name, p.addAs, "-g", name)
 }
 
+func (p *nodeProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if err := checkNames(p.name, []string{name}); err != nil {
+		return err
+	}
+	return runStream(ctx, p.r, out, p.name, "remove", "-g", name)
+}
+
 func (p *nodeProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	if p.reg == nil {
 		return nil, errors.New(p.name + ": no registry client")

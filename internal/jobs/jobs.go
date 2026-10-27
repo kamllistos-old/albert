@@ -21,6 +21,7 @@ import (
 const (
 	KindUpdate  = "update"
 	KindInstall = "install"
+	KindDelete  = "delete"
 
 	StatusQueued  = "queued"
 	StatusRunning = "running"
@@ -36,7 +37,7 @@ const (
 	subBuffer = 256
 )
 
-// Job is one update or install.
+// Job is one update, install or delete.
 type Job struct {
 	ID      string    `json:"id"`
 	Source  string    `json:"source"`
@@ -114,7 +115,7 @@ func (m *Manager) Close() {
 }
 
 // Submit queues a job and returns its ID. kind is "update" (no names means
-// everything the source has) or "install" (exactly one name).
+// everything the source has), "install" or "delete" (exactly one name).
 func (m *Manager) Submit(source, kind string, names []string) (string, error) {
 	if _, ok := m.inv.Provider(source); !ok {
 		return "", fmt.Errorf("unknown source %q", source)
@@ -122,8 +123,10 @@ func (m *Manager) Submit(source, kind string, names []string) (string, error) {
 	switch kind {
 	case KindUpdate:
 	case KindInstall:
+		fallthrough
+	case KindDelete:
 		if len(names) != 1 {
-			return "", errors.New("install needs exactly one tool name")
+			return "", fmt.Errorf("%s needs exactly one tool name", kind)
 		}
 	default:
 		return "", fmt.Errorf("unknown job kind %q", kind)
@@ -292,6 +295,9 @@ func (m *Manager) exec(j *Job, source, kind string, targets []string) (err error
 	if kind == KindInstall {
 		return p.Install(m.ctx, targets[0], w)
 	}
+	if kind == KindDelete {
+		return p.Remove(m.ctx, targets[0], w)
+	}
 	return p.Upgrade(m.ctx, targets, w)
 }
 
@@ -322,13 +328,16 @@ func needsPassword(out string) bool {
 }
 
 // passwordMessage tells the user to finish the job in Terminal: "albert
-// install" for installs, "albert update" for updates. An update-all job
+// install" for installs, "albert delete" for deletes, "albert update" for
+// updates. An update-all job
 // names its source, since that is all the job updated; pip also needs
 // --include-pip, without which "update --all" skips it.
 func passwordMessage(source, kind string, targets []string) string {
 	verb := "update"
 	if kind == KindInstall {
 		verb = "install"
+	} else if kind == KindDelete {
+		verb = "delete --yes"
 	}
 	tool := "--all --source " + source
 	if source == "pip" {

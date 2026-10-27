@@ -65,6 +65,7 @@ type Provider interface {
 	// Upgrade upgrades the named tools; empty names means all.
 	Upgrade(ctx context.Context, names []string, out io.Writer) error
 	Install(ctx context.Context, name string, out io.Writer) error
+	Remove(ctx context.Context, name string, out io.Writer) error
 	Search(ctx context.Context, q string) ([]Result, error)
 	WatchPaths() []string
 }

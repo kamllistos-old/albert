@@ -121,6 +121,11 @@ export function install(source, name) {
   return request('POST', '/api/install', { source, name });
 }
 
+// del deletes one installed tool and returns {jobs: [id]}.
+export function del(source, name) {
+  return request('POST', '/api/delete', { source, name });
+}
+
 // search looks for installable tools in every source: {results: [...]}.
 export function search(q, signal) {
   return request('GET', `/api/search?q=${encodeURIComponent(q)}`, undefined, signal);

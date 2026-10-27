@@ -112,6 +112,13 @@ func (p *uvProvider) Install(ctx context.Context, name string, out io.Writer) er
 	return runStream(ctx, p.r, out, "uv", "tool", "install", name)
 }
 
+func (p *uvProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if err := checkNames("uv", []string{name}); err != nil {
+		return err
+	}
+	return runStream(ctx, p.r, out, "uv", "tool", "uninstall", name)
+}
+
 func (p *uvProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	return pypiSearch(ctx, p.reg, p.Name(), q)
 }
@@ -189,6 +196,13 @@ func (p *pipxProvider) Install(ctx context.Context, name string, out io.Writer) 
 		return err
 	}
 	return runStream(ctx, p.r, out, "pipx", "install", name)
+}
+
+func (p *pipxProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if err := checkNames("pipx", []string{name}); err != nil {
+		return err
+	}
+	return runStream(ctx, p.r, out, "pipx", "uninstall", name)
 }
 
 func (p *pipxProvider) Search(ctx context.Context, q string) ([]Result, error) {
@@ -338,6 +352,8 @@ func (p *pipProvider) Upgrade(ctx context.Context, names []string, out io.Writer
 }
 
 func (p *pipProvider) Install(context.Context, string, io.Writer) error { return ErrUnsupported }
+
+func (p *pipProvider) Remove(context.Context, string, io.Writer) error { return ErrUnsupported }
 
 func (p *pipProvider) Search(context.Context, string) ([]Result, error) { return nil, ErrUnsupported }
 
