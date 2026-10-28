@@ -14,7 +14,7 @@ func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	c := New()
-	c.PyPIURL, c.NPMURL, c.CratesURL, c.GoProxyURL = srv.URL, srv.URL, srv.URL, srv.URL
+	c.PyPIURL, c.NPMURL, c.CratesURL, c.GoProxyURL, c.GitHubURL = srv.URL, srv.URL, srv.URL, srv.URL, srv.URL
 	return c
 }
 
@@ -209,5 +209,19 @@ func TestRegistryBadJSON(t *testing.T) {
 	})
 	if _, err := c.PyPI(context.Background(), "x"); err == nil {
 		t.Fatal("want decode error")
+	}
+}
+
+func TestNewerAlbert(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/kamllistos/albert/releases/latest" {
+			t.Errorf("path %q", r.URL.Path)
+		}
+		w.Write([]byte(`{"tag_name":"v0.1.10"}`))
+	})
+	for cur, want := range map[string]string{"0.1.4": "0.1.10", "v0.1.9": "0.1.10", "0.1.10": "", "0.2.0": "", "dev": ""} {
+		if got, err := c.NewerAlbert(context.Background(), cur); err != nil || got != want {
+			t.Errorf("NewerAlbert(%q) = %q, %v; want %q", cur, got, err, want)
+		}
 	}
 }

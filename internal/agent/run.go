@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamllistos/albert/internal/inventory"
@@ -80,12 +81,19 @@ func Run(ctx context.Context, o RunOptions) error {
 	ps := newProviders()
 	inv := inventory.New(ps, filepath.Join(o.StateDir, "cache.json"))
 	jm := jobs.NewManager(inv)
+	var latest atomic.Value // newer release version, checked once per launch
+	go func() {
+		if v, err := registry.New().NewerAlbert(ctx, o.Version); err == nil && v != "" {
+			latest.Store(v)
+		}
+	}()
 	srv := newServer(ctx, Config{
 		Token:        token,
 		AllowedHosts: allowedHosts(o.Port, o.UIPort),
 		UIOrigins:    uiOrigins(o.UIPort),
 		UI:           o.UI,
 		Version:      o.Version,
+		Latest:       func() string { v, _ := latest.Load().(string); return v },
 	}, inv, jm)
 	hs := &http.Server{
 		Handler:           srv,
