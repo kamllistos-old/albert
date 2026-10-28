@@ -31,6 +31,8 @@ type Config struct {
 	// the token; the page trades a one-time code at POST /api/session (R20).
 	UI      fs.FS
 	Version string
+	// Latest returns a newer Albert release version, or "" (may be nil).
+	Latest func() string
 }
 
 var (
@@ -129,7 +131,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version})
+	latest := ""
+	if s.cfg.Latest != nil {
+		latest = s.cfg.Latest()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "version": s.cfg.Version, "latest": latest})
 }
 
 func (s *server) tools(w http.ResponseWriter, r *http.Request) {

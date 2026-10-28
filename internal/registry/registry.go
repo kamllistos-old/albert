@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -35,7 +36,7 @@ type Pkg struct {
 type Client struct {
 	HTTP *http.Client
 	// Base URLs, without a trailing slash.
-	PyPIURL, NPMURL, CratesURL, GoProxyURL string
+	PyPIURL, NPMURL, CratesURL, GoProxyURL, GitHubURL string
 }
 
 // New returns a Client for the real registries with a 10s timeout.
@@ -46,6 +47,7 @@ func New() *Client {
 		NPMURL:     "https://registry.npmjs.org",
 		CratesURL:  "https://crates.io",
 		GoProxyURL: "https://proxy.golang.org",
+		GitHubURL:  "https://api.github.com",
 	}
 }
 
@@ -207,4 +209,45 @@ func escapeModule(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// NewerAlbert returns the latest Albert release version when it is newer than
+// current, or "" when current is up to date or a dev build.
+func (c *Client) NewerAlbert(ctx context.Context, current string) (string, error) {
+	current = strings.TrimPrefix(current, "v")
+	if current == "" || current == "dev" {
+		return "", nil
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := c.get(ctx, c.GitHubURL+"/repos/kamllistos/albert/releases/latest", &rel); err != nil {
+		return "", err
+	}
+	latest := strings.TrimPrefix(rel.TagName, "v")
+	if !newerVersion(latest, current) {
+		return "", nil
+	}
+	return latest, nil
+}
+
+// newerVersion reports whether dotted version a is greater than b. A
+// pre-release suffix ("1.2.0-rc1") is ignored.
+func newerVersion(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < max(len(as), len(bs)); i++ {
+		x, y := versionPart(as, i), versionPart(bs, i)
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+func versionPart(parts []string, i int) int {
+	if i >= len(parts) {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.SplitN(parts[i], "-", 2)[0])
+	return n
 }

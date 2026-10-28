@@ -24,6 +24,7 @@ import (
 	"github.com/kamllistos/albert/internal/agent"
 	"github.com/kamllistos/albert/internal/dock"
 	"github.com/kamllistos/albert/internal/jobs"
+	"github.com/kamllistos/albert/internal/registry"
 	"github.com/kamllistos/albert/internal/runner"
 	"github.com/kamllistos/albert/internal/state"
 )
@@ -464,7 +465,26 @@ func cmdUp(a *app, args []string) int {
 	if len(pos) > 0 {
 		return a.usagef("albert up takes no arguments. Options: --native, --no-open.")
 	}
-	return a.lifecycle().up(*native, *noOpen)
+	latest := make(chan string, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		v, _ := registry.New().NewerAlbert(ctx, version)
+		latest <- v
+	}()
+	code = a.lifecycle().up(*native, *noOpen)
+	if v := <-latest; v != "" {
+		fmt.Fprintf(a.stdout, "Albert %s is available (you have %s). %s\n", v, version, upgradeHint())
+	}
+	return code
+}
+
+// upgradeHint says how to update Albert, based on how it was installed.
+func upgradeHint() string {
+	if exe, err := os.Executable(); err == nil && isHomebrewPath(exe) {
+		return "Update with: brew upgrade albert"
+	}
+	return "Update by running the install command from the README again."
 }
 
 func cmdDown(a *app, args []string) int {

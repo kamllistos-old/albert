@@ -37,6 +37,11 @@ Docker (Docker Desktop or OrbStack) is optional. If it's running, Albert uses it
 
 Some updates need your Mac password (for example, tools installed system-wide). Albert can't ask for it in the browser, so it tells you to run `albert update <tool>` in Terminal instead.
 
+## Update Albert
+
+When a new version is out, `albert up` and the Albert window tell you. Update with `brew upgrade albert`, or run the install one-liner again if you used it. Then run `albert down` and `albert up`.
+
+
 ## Uninstall
 
 One command removes Albert, its files in its settings folder (`~/.albert`) and its window image from Docker:

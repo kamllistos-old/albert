@@ -121,6 +121,11 @@ export function install(source, name) {
   return request('POST', '/api/install', { source, name });
 }
 
+// health returns {ok, version, latest}; latest is a newer Albert release or "".
+export function health() {
+  return request('GET', '/api/health');
+}
+
 // del deletes one installed tool and returns {jobs: [id]}.
 export function del(source, name) {
   return request('POST', '/api/delete', { source, name });

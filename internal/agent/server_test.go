@@ -242,8 +242,18 @@ func TestHealth(t *testing.T) {
 	w := serve(e.h, request("GET", "/api/health", ""))
 	wantStatus(t, w, http.StatusOK)
 	got := decode[map[string]any](t, w)
-	if got["ok"] != true || got["version"] != "1.2.3" {
-		t.Fatalf("health = %v, want ok true and version 1.2.3", got)
+	if got["ok"] != true || got["version"] != "1.2.3" || got["latest"] != "" {
+		t.Fatalf("health = %v, want ok true, version 1.2.3, no latest", got)
+	}
+}
+
+func TestHealthReportsNewerRelease(t *testing.T) {
+	cfg := testConfig()
+	cfg.Latest = func() string { return "9.9.9" }
+	e := newEnv(t, cfg)
+	got := decode[map[string]any](t, serve(e.h, request("GET", "/api/health", "")))
+	if got["latest"] != "9.9.9" {
+		t.Fatalf("latest = %v, want 9.9.9", got["latest"])
 	}
 }
 

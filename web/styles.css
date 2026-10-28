@@ -226,6 +226,7 @@ a:hover { text-decoration: underline; }
   font-weight: 500;
 }
 .notice > span { flex: 1; }
+.notice-info { background: var(--accent-soft); color: var(--accent); }
 .notice-close { color: inherit; }
 
 /* ---- installed view ------------------------------------------------------- */
