@@ -185,6 +185,8 @@ a:hover { text-decoration: underline; }
 .btn:disabled { cursor: default; opacity: 0.5; }
 .btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-danger { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
 .btn-small { height: 26px; padding: 0 10px; font-size: 12px; border-radius: 6px; min-width: 76px; }
 .btn-link {
   border: 0; background: none; padding: 4px 6px; cursor: pointer;
@@ -286,7 +288,7 @@ col.c-name { width: 22%; }
 col.c-source { width: 116px; }
 col.c-ver { width: 10%; }
 col.c-status { width: 140px; }
-col.c-act { width: 112px; }
+col.c-act { width: 196px; }
 
 .tools th {
   position: sticky; top: 57px; z-index: 1;
@@ -308,6 +310,7 @@ col.c-act { width: 112px; }
 .tools tbody tr.is-selected { background: var(--selected); }
 .tools th:first-child, .tools td:first-child { padding-left: 16px; }
 .tools .c-act { text-align: right; padding-right: 12px; text-overflow: clip; }
+.row-actions { display: inline-flex; gap: 6px; }
 
 .name-wrap { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .name-btn {
@@ -370,7 +373,8 @@ col.c-act { width: 112px; }
 .detail-facts dd { margin: 0; word-break: break-all; }
 .detail-facts .path { user-select: all; color: var(--text-2); }
 .detail-hint { color: var(--text-2); font-size: 13px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--hover); }
-.detail .btn { align-self: flex-start; margin-top: auto; }
+.detail-actions { display: flex; gap: 8px; margin-top: auto; }
+.detail .btn { align-self: flex-start; }
 
 /* ---- install view ------------------------------------------------------------ */
 
@@ -488,6 +492,6 @@ col.c-act { width: 112px; }
   #refresh { padding: 0 9px; }
   col.c-source { width: 104px; }
   col.c-status { width: 128px; }
-  col.c-act { width: 104px; }
+  col.c-act { width: 186px; }
   .btn-small { min-width: 72px; }
 }

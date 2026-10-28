@@ -56,8 +56,8 @@ function render() {
   renderChips();
   renderSummary();
   renderSourceNote();
-  renderTable($('table'), state.snapshot, state.filters, startUpdate, select, {
-    isBusy, selected: state.selected, empty: emptyState(), onClear: clearFilters,
+  renderTable($('table'), state.snapshot, state.filters, startUpdate, startDelete, select, {
+    isBusy, isDeleting, selected: state.selected, empty: emptyState(), onClear: clearFilters,
   });
   renderDetail();
 }
@@ -218,6 +218,11 @@ function renderDetail() {
   const busy = isBusy(t);
   up.disabled = busy || state.sessionEnded;
   up.textContent = busy ? 'Updating…' : (t.outdated ? `Update to ${t.latest}` : 'Update');
+  const del = $('detail-delete');
+  del.hidden = t.readOnly;
+  const deleting = isDeleting(t);
+  del.disabled = deleting || state.sessionEnded;
+  del.textContent = deleting ? 'Deleting…' : 'Delete';
 }
 
 function select(t) {
@@ -254,6 +259,14 @@ function isBusy(t) {
   return false;
 }
 
+function isDeleting(t) {
+  for (const j of state.active.values()) {
+    if (j.kind !== 'delete' || j.source !== t.source) continue;
+    if (j.targets.includes(t.name) || (t.id && j.targets.includes(t.id))) return true;
+  }
+  return false;
+}
+
 function track(job, label, extra = {}) {
   if (state.finished.has(job.id)) return; // it ended before its submit returned
   if (job.status === 'success' || job.status === 'failed') return;
@@ -284,6 +297,21 @@ async function startUpdate(t) {
     const res = await api.update({ source: t.source, names: [target] });
     for (const id of res.jobs) {
       track({ id, source: t.source, kind: 'update', targets: [target], status: 'queued' }, t.name);
+    }
+
+    scheduleRender();
+  } catch (err) {
+    showError(err);
+  }
+}
+
+async function startDelete(t) {
+  const target = updateName(t);
+  if (!(await confirm(`Delete ${t.name}?`, `Albert will ask ${sourceLabel(t.source)} to remove this tool from your Mac.`, 'Delete'))) return;
+  try {
+    const res = await api.del(t.source, target);
+    for (const id of res.jobs) {
+      track({ id, source: t.source, kind: 'delete', targets: [target], status: 'queued' }, t.name);
     }
     scheduleRender();
   } catch (err) {
@@ -340,9 +368,12 @@ function jobDone(job) {
   jobsUI.done(job);
   const what = (was && was.label) || ((job.targets && job.targets.length === 1) ? job.targets[0] : 'Your tools');
   if (job.status === 'success') {
-    announce(job.kind === 'install' ? `${what} is installed.` : `${what} updated.`);
+    if (job.kind === 'install') announce(`${what} is installed.`);
+    else if (job.kind === 'delete') announce(`${what} deleted.`);
+    else announce(`${what} updated.`);
   } else {
-    announce(`${job.kind === 'install' ? 'Installing' : 'Updating'} ${what} didn't finish. ${job.message || ''}`);
+    const verb = job.kind === 'install' ? 'Installing' : (job.kind === 'delete' ? 'Deleting' : 'Updating');
+    announce(`${verb} ${what} didn't finish. ${job.message || ''}`);
   }
   if (was || job.kind === 'install') installUI.refresh();
   scheduleRender();
@@ -519,6 +550,10 @@ $('detail-update').addEventListener('click', () => {
   const t = selectedTool();
   if (t) startUpdate(t);
 });
+$('detail-delete').addEventListener('click', () => {
+  const t = selectedTool();
+  if (t) startDelete(t);
+});
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !$('detail').hidden && !$('confirm').open) {
@@ -538,14 +573,14 @@ document.addEventListener('keydown', (e) => {
 api.onSessionEnded(() => endSession());
 
 async function start() {
-  renderTable($('table'), { tools: [], providers: [] }, state.filters, startUpdate, select, {
+  renderTable($('table'), { tools: [], providers: [] }, state.filters, startUpdate, startDelete, select, {
     empty: { title: 'Opening Albert…', loading: true },
   });
   try {
     state.snapshot = await api.getTools();
   } catch (err) {
     if (err instanceof api.SessionEndedError) return;
-    renderTable($('table'), { tools: [], providers: [] }, state.filters, startUpdate, select, {
+    renderTable($('table'), { tools: [], providers: [] }, state.filters, startUpdate, startDelete, select, {
       empty: { title: "Albert isn't responding.", text: 'If you stopped it, run "albert up" in Terminal to start it again. This page will pick up again once Albert is back.' },
     });
     setTimeout(start, 5000);

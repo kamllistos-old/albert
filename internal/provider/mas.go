@@ -102,6 +102,13 @@ func (p *masProvider) Install(ctx context.Context, name string, out io.Writer) e
 	return runStream(ctx, p.r, out, "mas", "install", name)
 }
 
+func (p *masProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if !masIDOnly.MatchString(name) {
+		return errors.New("mas: use the App Store ID")
+	}
+	return runStream(ctx, p.r, out, "mas", "uninstall", name)
+}
+
 func (p *masProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	q = strings.TrimSpace(q)
 	if q == "" || strings.HasPrefix(q, "-") {

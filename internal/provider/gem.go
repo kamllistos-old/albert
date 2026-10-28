@@ -175,6 +175,30 @@ func (p *gemProvider) Install(ctx context.Context, name string, out io.Writer) e
 	return runStream(ctx, p.r, out, "gem", "install", "--user-install", name)
 }
 
+func (p *gemProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if err := checkNames("gem", []string{name}); err != nil {
+		return err
+	}
+	dir := p.gemDir()
+	if writableGemDir(dir) {
+		return runStream(ctx, p.r, out, "gem", "uninstall", "--all", "--executables", name)
+	}
+	tools, err := p.list(ctx, dir)
+	if err != nil {
+		return err
+	}
+	for _, t := range tools {
+		if t.Name != name {
+			continue
+		}
+		if t.ReadOnly {
+			return ErrReadOnly
+		}
+		return runStream(ctx, p.r, out, "gem", "uninstall", "--all", "--executables", "--user-install", name)
+	}
+	return fmt.Errorf("gem: %q is not installed", name)
+}
+
 func (p *gemProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	q = strings.TrimSpace(q)
 	if !ValidName(q) {

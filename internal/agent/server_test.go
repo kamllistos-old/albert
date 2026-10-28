@@ -43,6 +43,7 @@ type fakeProvider struct {
 	listCalls int
 	upgrades  [][]string
 	installs  []string
+	removes   []string
 }
 
 func (f *fakeProvider) Name() string    { return f.name }
@@ -70,6 +71,13 @@ func (f *fakeProvider) Install(_ context.Context, name string, out io.Writer) er
 	io.WriteString(out, "installing "+name+"\n")
 	return nil
 }
+func (f *fakeProvider) Remove(_ context.Context, name string, out io.Writer) error {
+	f.mu.Lock()
+	f.removes = append(f.removes, name)
+	f.mu.Unlock()
+	io.WriteString(out, "removing "+name+"\n")
+	return nil
+}
 func (f *fakeProvider) Search(context.Context, string) ([]provider.Result, error) {
 	return f.results, f.searchErr
 }
@@ -85,6 +93,12 @@ func (f *fakeProvider) installed() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.installs...)
+}
+
+func (f *fakeProvider) removed() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.removes...)
 }
 
 func testConfig() Config {
@@ -347,9 +361,37 @@ func TestInstallUnknownSource400(t *testing.T) {
 	if !strings.Contains(msg, "apt") {
 		t.Errorf("error %q does not name the source", msg)
 	}
+
 	if n := len(e.jm.List()); n != 0 {
 		t.Fatalf("%d jobs submitted", n)
 	}
+}
+
+func TestDeleteRejectsBadName(t *testing.T) {
+	for _, name := range []string{"--force", "-rf", "a b", "x;rm", ""} {
+		t.Run(name, func(t *testing.T) {
+			brew := &fakeProvider{name: "brew"}
+			e := scanned(t, brew)
+			body, _ := json.Marshal(map[string]string{"source": "brew", "name": name})
+			wantError(t, serve(e.h, request("POST", "/api/delete", string(body))), http.StatusBadRequest)
+			if n := len(e.jm.List()); n != 0 {
+				t.Fatalf("%d jobs submitted for name %q", n, name)
+			}
+			if got := brew.removed(); len(got) != 0 {
+				t.Fatalf("provider asked to remove %v", got)
+			}
+		})
+	}
+}
+
+func TestDelete(t *testing.T) {
+	brew := &fakeProvider{name: "brew"}
+	e := scanned(t, brew)
+	w := serve(e.h, request("POST", "/api/delete", `{"source":"brew","name":"jq"}`))
+	if got := jobSources(t, e, w); !slices.Equal(got, []string{"brew"}) {
+		t.Fatalf("jobs for %v, want [brew]", got)
+	}
+	eventually(t, "delete to run", func() bool { return slices.Equal(brew.removed(), []string{"jq"}) })
 }
 
 func TestSearchMergesAndSkipsUnsupported(t *testing.T) {

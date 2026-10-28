@@ -76,6 +76,7 @@ You can also use Albert without the browser.
 | `albert update <tool> [--source S]` | Update one tool. Use `--source` if several sources have a tool with that name. |
 | `albert update --all [--source S] [--include-pip]` | Update every tool that has an update. pip is skipped unless you add `--include-pip`. |
 | `albert install <tool> [--source S]` | Install a tool. Without `--source`, Albert searches all sources and asks if more than one has it. |
+| `albert delete <tool> [--source S] [--yes]` | Delete one tool. Asks first; add `--yes` to skip the question. Not available for go or pip tools. |
 | `albert search <query>` | Search all sources for a tool to install. |
 | `albert doctor` | Check which package managers (and Docker) Albert can use. |
 | `albert version` | Show Albert's version. |

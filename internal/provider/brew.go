@@ -228,6 +228,13 @@ func (p *brewProvider) Install(ctx context.Context, name string, out io.Writer) 
 	return p.stream(ctx, out, "install", p.kind(), name)
 }
 
+func (p *brewProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if !ValidName(name) {
+		return fmt.Errorf("brew: invalid name %q", name)
+	}
+	return p.stream(ctx, out, "uninstall", p.kind(), name)
+}
+
 func (p *brewProvider) Search(ctx context.Context, q string) ([]Result, error) {
 	if strings.HasPrefix(q, "-") {
 		return nil, fmt.Errorf("brew: invalid search %q", q)

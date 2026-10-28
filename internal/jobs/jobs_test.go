@@ -20,6 +20,7 @@ type fakeProvider struct {
 	name    string
 	upgrade func(ctx context.Context, names []string, out io.Writer) error
 	install func(ctx context.Context, name string, out io.Writer) error
+	remove  func(ctx context.Context, name string, out io.Writer) error
 
 	mu        sync.Mutex
 	version   string
@@ -58,6 +59,13 @@ func (f *fakeProvider) Upgrade(ctx context.Context, names []string, out io.Write
 func (f *fakeProvider) Install(ctx context.Context, name string, out io.Writer) error {
 	if f.install != nil {
 		return f.install(ctx, name, out)
+	}
+	return nil
+}
+
+func (f *fakeProvider) Remove(ctx context.Context, name string, out io.Writer) error {
+	if f.remove != nil {
+		return f.remove(ctx, name, out)
 	}
 	return nil
 }
@@ -364,10 +372,27 @@ func TestSudoMessageInstall(t *testing.T) {
 		io.WriteString(w, "sudo: a terminal is required to read the password\n")
 		return errors.New("exit status 1")
 	}
+
 	m := newManager(t, p)
 	id, _ := m.Submit("cask", "install", []string{"firefox"})
 	j := waitDone(t, m, id)
 	const want = `This needs your password. Run "albert install firefox" in Terminal.`
+	if j.Status != StatusFailed || j.Message != want {
+		t.Errorf("got %q %q", j.Status, j.Message)
+	}
+}
+
+// R14b: delete jobs point at "albert delete --yes".
+func TestSudoMessageDelete(t *testing.T) {
+	p := &fakeProvider{name: "cask"}
+	p.remove = func(_ context.Context, _ string, w io.Writer) error {
+		io.WriteString(w, "sudo: a terminal is required to read the password\n")
+		return errors.New("exit status 1")
+	}
+	m := newManager(t, p)
+	id, _ := m.Submit("cask", "delete", []string{"firefox"})
+	j := waitDone(t, m, id)
+	const want = `This needs your password. Run "albert delete --yes firefox" in Terminal.`
 	if j.Status != StatusFailed || j.Message != want {
 		t.Errorf("got %q %q", j.Status, j.Message)
 	}
@@ -394,6 +419,7 @@ func TestInstallJob(t *testing.T) {
 		fmt.Fprintln(out, "installed", name)
 		return nil
 	}
+
 	m := newManager(t, p)
 	id, err := m.Submit("uv", "install", []string{"cowsay"})
 	if err != nil {
@@ -401,6 +427,24 @@ func TestInstallJob(t *testing.T) {
 	}
 	if j := waitDone(t, m, id); j.Status != StatusSuccess || got != "cowsay" || j.Kind != "install" {
 		t.Errorf("got %+v, installed %q", j, got)
+	}
+}
+
+func TestDeleteJob(t *testing.T) {
+	var got string
+	p := &fakeProvider{name: "uv"}
+	p.remove = func(_ context.Context, name string, out io.Writer) error {
+		got = name
+		fmt.Fprintln(out, "removed", name)
+		return nil
+	}
+	m := newManager(t, p)
+	id, err := m.Submit("uv", "delete", []string{"cowsay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := waitDone(t, m, id); j.Status != StatusSuccess || got != "cowsay" || j.Kind != "delete" {
+		t.Errorf("got %+v, removed %q", j, got)
 	}
 }
 
@@ -420,6 +464,9 @@ func TestSubmitValidation(t *testing.T) {
 		{"install no name", "brew", "install", nil},
 		{"install two names", "brew", "install", []string{"a", "b"}},
 		{"install bad name", "brew", "install", []string{"--x"}},
+		{"delete no name", "brew", "delete", nil},
+		{"delete two names", "brew", "delete", []string{"a", "b"}},
+		{"delete bad name", "brew", "delete", []string{"--x"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

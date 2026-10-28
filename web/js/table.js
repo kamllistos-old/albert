@@ -97,7 +97,7 @@ function setup(el) {
   const tbody = h('tbody');
   table.append(colgroup, thead, tbody);
   const empty = h('div', 'empty');
-  const s = { table, tbody, empty, byKey: new Map(), onUpdate: null, onSelect: null };
+  const s = { table, tbody, empty, byKey: new Map(), onUpdate: null, onDelete: null, onSelect: null };
 
   el.addEventListener('click', (e) => {
     const action = e.target.closest('[data-action]');
@@ -111,6 +111,10 @@ function setup(el) {
     if (!tool) return;
     if (action && action.dataset.action === 'update') {
       if (!action.disabled) s.onUpdate(tool);
+      return;
+    }
+    if (action && action.dataset.action === 'delete') {
+      if (!action.disabled) s.onDelete(tool);
       return;
     }
     if (e.target.closest('a')) return;
@@ -152,6 +156,7 @@ function row(t, provider, view) {
   status.append(badge(toolStatus(t, provider)));
 
   const act = h('td', 'c-act');
+  const actions = h('div', 'row-actions');
   const up = h('button', t.outdated && !t.readOnly ? 'btn btn-small btn-primary' : 'btn btn-small');
   up.type = 'button';
   up.dataset.action = 'update';
@@ -166,7 +171,22 @@ function row(t, provider, view) {
     up.textContent = 'Update';
     up.setAttribute('aria-label', `Update ${t.name}`);
   }
-  act.append(up);
+  const del = h('button', t.readOnly ? 'btn btn-small' : 'btn btn-small btn-danger');
+  del.type = 'button';
+  del.dataset.action = 'delete';
+  if (t.readOnly) {
+    del.disabled = true;
+    del.textContent = 'Delete';
+    del.title = "Albert can't delete this tool.";
+  } else if (view.isDeleting && view.isDeleting(t)) {
+    del.disabled = true;
+    del.append(spinner(), document.createTextNode('Deleting'));
+  } else {
+    del.textContent = 'Delete';
+    del.setAttribute('aria-label', `Delete ${t.name}`);
+  }
+  actions.append(up, del);
+  act.append(actions);
 
   tr.append(
     name,
@@ -183,9 +203,10 @@ function row(t, provider, view) {
 // renderTable draws the tools that match filters. view is optional:
 // {isBusy(tool), selected: key, empty: {title, text, clear}} where empty is
 // shown when no row matches, and onClear is called by its button.
-export function renderTable(el, snapshot, filters, onUpdate, onSelect, view = {}) {
+export function renderTable(el, snapshot, filters, onUpdate, onDelete, onSelect, view = {}) {
   const s = state.get(el) || setup(el);
   s.onUpdate = onUpdate;
+  s.onDelete = onDelete;
   s.onSelect = onSelect;
   s.onClear = view.onClear;
 

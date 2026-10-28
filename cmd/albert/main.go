@@ -59,6 +59,7 @@ var commands = map[string]command{
 	"list":      cmdList,
 	"outdated":  cmdOutdated,
 	"update":    cmdUpdate,
+	"delete":    cmdDelete,
 	"install":   cmdInstall,
 	"search":    cmdSearch,
 	"doctor":    cmdDoctor,
@@ -77,6 +78,7 @@ Commands:
   list       Show installed tools            [--source S] [--outdated] [--deps] [--json]
   outdated   Show tools with a newer version [--source S]
   update     Update one tool or all of them  <tool> | --all  [--source S] [--include-pip]
+  delete     Delete one installed tool       <tool> [--source S] [--yes]
   install    Install a tool                  <tool> [--source S]
   search     Find tools to install           <query>
   doctor     Check which package managers Albert can use
@@ -182,9 +184,12 @@ var cliSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 // managers Albert runs (and by the background agent). Homebrew 7 asks
 // "proceed? [y/n]" before every install and upgrade; the user already chose
 // the action in Albert, and the window has no keyboard to answer with, so
-// Homebrew is told not to ask. Older Homebrew versions ignore the variable.
+// Homebrew is told not to ask. Deleting one formula must not also remove
+// other libraries it thinks are orphaned, so autoremove is off. Older
+// Homebrew versions ignore both variables.
 func configureChildEnv() {
 	os.Setenv("HOMEBREW_NO_ASK", "1")
+	os.Setenv("HOMEBREW_NO_AUTOREMOVE", "1")
 }
 
 func main() {

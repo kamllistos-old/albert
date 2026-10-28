@@ -582,3 +582,5 @@ func TestDownFlags(t *testing.T) {
 		t.Errorf("stdout %q", h.out)
 	}
 }
+
+func (f *fakeProvider) Remove(context.Context, string, io.Writer) error { return nil }

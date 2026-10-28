@@ -6,10 +6,14 @@ import (
 )
 
 func TestConfigureChildEnvStopsHomebrewAsking(t *testing.T) {
-	t.Setenv("HOMEBREW_NO_ASK", "")
-	os.Unsetenv("HOMEBREW_NO_ASK")
+	for _, k := range []string{"HOMEBREW_NO_ASK", "HOMEBREW_NO_AUTOREMOVE"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
 	configureChildEnv()
-	if got := os.Getenv("HOMEBREW_NO_ASK"); got != "1" {
-		t.Fatalf("HOMEBREW_NO_ASK = %q, want 1", got)
+	for _, k := range []string{"HOMEBREW_NO_ASK", "HOMEBREW_NO_AUTOREMOVE"} {
+		if got := os.Getenv(k); got != "1" {
+			t.Fatalf("%s = %q, want 1", k, got)
+		}
 	}
 }
