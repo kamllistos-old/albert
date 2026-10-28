@@ -653,3 +653,5 @@ func TestUpdatableSources(t *testing.T) {
 		t.Errorf("UpdatableSources(empty) = %v, want none", got)
 	}
 }
+
+func (f *fakeProvider) Remove(context.Context, string, io.Writer) error { return nil }

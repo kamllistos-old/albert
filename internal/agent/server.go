@@ -239,29 +239,6 @@ func (s *server) install(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	func (s *server) deleteTool(w http.ResponseWriter, r *http.Request) {
-		var req deleteRequest
-		if !readJSON(w, r, &req) {
-			return
-		}
-		if req.Source == "" {
-			writeError(w, http.StatusBadRequest, "Say which source the tool comes from.")
-			return
-		}
-		if !s.knownSource(w, req.Source) {
-			return
-		}
-		if req.Name == "" {
-			writeError(w, http.StatusBadRequest, "Choose a tool to delete.")
-			return
-		}
-		if !validNames(w, []string{req.Name}) {
-			return
-		}
-		if id, ok := s.submit(w, req.Source, jobs.KindDelete, []string{req.Name}); ok {
-			writeJSON(w, http.StatusOK, map[string][]string{"jobs": {id}})
-		}
-	}
 	if req.Source == "" {
 		writeError(w, http.StatusBadRequest, "Say which source to install from.")
 		return
@@ -277,6 +254,30 @@ func (s *server) install(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id, ok := s.submit(w, req.Source, jobs.KindInstall, []string{req.Name}); ok {
+		writeJSON(w, http.StatusOK, map[string][]string{"jobs": {id}})
+	}
+}
+
+func (s *server) deleteTool(w http.ResponseWriter, r *http.Request) {
+	var req deleteRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Source == "" {
+		writeError(w, http.StatusBadRequest, "Say which source the tool comes from.")
+		return
+	}
+	if !s.knownSource(w, req.Source) {
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "Choose a tool to delete.")
+		return
+	}
+	if !validNames(w, []string{req.Name}) {
+		return
+	}
+	if id, ok := s.submit(w, req.Source, jobs.KindDelete, []string{req.Name}); ok {
 		writeJSON(w, http.StatusOK, map[string][]string{"jobs": {id}})
 	}
 }

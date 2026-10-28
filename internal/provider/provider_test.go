@@ -283,3 +283,5 @@ func TestSearchAllTimeoutBounded(t *testing.T) {
 		t.Fatalf("SearchAll = %+v, want the npm result only", got)
 	}
 }
+
+func (f *searchFake) Remove(context.Context, string, io.Writer) error { return nil }

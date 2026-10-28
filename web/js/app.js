@@ -255,14 +255,14 @@ function isBusy(t) {
     } else if (j.targets.includes(t.name) || (t.id && j.targets.includes(t.id))) {
       return true;
     }
+  }
+  return false;
+}
 
-    function isDeleting(t) {
-      for (const j of state.active.values()) {
-        if (j.kind !== 'delete' || j.source !== t.source) continue;
-        if (j.targets.includes(t.name) || (t.id && j.targets.includes(t.id))) return true;
-      }
-      return false;
-    }
+function isDeleting(t) {
+  for (const j of state.active.values()) {
+    if (j.kind !== 'delete' || j.source !== t.source) continue;
+    if (j.targets.includes(t.name) || (t.id && j.targets.includes(t.id))) return true;
   }
   return false;
 }
@@ -299,18 +299,19 @@ async function startUpdate(t) {
       track({ id, source: t.source, kind: 'update', targets: [target], status: 'queued' }, t.name);
     }
 
-    async function startDelete(t) {
-      const target = updateName(t);
-      if (!(await confirm(`Delete ${t.name}?`, `Albert will ask ${sourceLabel(t.source)} to remove this tool from your Mac.`, 'Delete'))) return;
-      try {
-        const res = await api.del(t.source, target);
-        for (const id of res.jobs) {
-          track({ id, source: t.source, kind: 'delete', targets: [target], status: 'queued' }, t.name);
-        }
-        scheduleRender();
-      } catch (err) {
-        showError(err);
-      }
+    scheduleRender();
+  } catch (err) {
+    showError(err);
+  }
+}
+
+async function startDelete(t) {
+  const target = updateName(t);
+  if (!(await confirm(`Delete ${t.name}?`, `Albert will ask ${sourceLabel(t.source)} to remove this tool from your Mac.`, 'Delete'))) return;
+  try {
+    const res = await api.del(t.source, target);
+    for (const id of res.jobs) {
+      track({ id, source: t.source, kind: 'delete', targets: [target], status: 'queued' }, t.name);
     }
     scheduleRender();
   } catch (err) {

@@ -181,7 +181,7 @@ func (p *gemProvider) Remove(ctx context.Context, name string, out io.Writer) er
 	}
 	dir := p.gemDir()
 	if writableGemDir(dir) {
-		return runStream(ctx, p.r, out, "gem", "uninstall", name)
+		return runStream(ctx, p.r, out, "gem", "uninstall", "--all", "--executables", name)
 	}
 	tools, err := p.list(ctx, dir)
 	if err != nil {
@@ -194,7 +194,7 @@ func (p *gemProvider) Remove(ctx context.Context, name string, out io.Writer) er
 		if t.ReadOnly {
 			return ErrReadOnly
 		}
-		return runStream(ctx, p.r, out, "gem", "uninstall", "--user-install", name)
+		return runStream(ctx, p.r, out, "gem", "uninstall", "--all", "--executables", "--user-install", name)
 	}
 	return fmt.Errorf("gem: %q is not installed", name)
 }
